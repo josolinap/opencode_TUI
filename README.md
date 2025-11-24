@@ -2,7 +2,7 @@
 
 **Advanced AI-Powered Terminal Development Environment with Enhanced Brain System**
 
-![TUI with Neo-Clone Agent](TUI%20with%20neo-clone%20agent.png)
+![TUI with Neo-Clone Agent](assets/TUI%20with%20neo-clone%20agent.png)
 
 ---
 
