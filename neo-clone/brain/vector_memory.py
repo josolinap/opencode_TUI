@@ -1,0 +1,583 @@
+"""
+Vector Memory System for MiniMax Agent Architecture
+
+This module provides semantic search and vector-based memory retrieval
+for intelligent context-aware responses.
+
+Author: MiniMax Agent
+Version: 1.0
+"""
+
+import math
+import threading
+import time
+from datetime import datetime
+from typing import Dict, List, Optional, Any, Tuple, Union
+from dataclasses import dataclass
+import numpy as np
+import logging
+import json
+import uuid
+from collections import defaultdict
+import hashlib
+
+from data_models import (
+    MemoryEntry, MemoryType, VectorSearchResult, 
+    create_memory_entry, create_vector_search_result
+)
+
+logger = logging.getLogger(__name__)
+
+
+class VectorEmbedding:
+    """Simple vector embedding implementation"""
+    
+    def __init__(self, dimension: int = 384):
+        """
+        Initialize vector embedding
+        
+        Args:
+            dimension: Vector dimension size
+        """
+        self.dimension = dimension
+        self.word_vectors: Dict[str, np.ndarray] = {}
+        self.lock = threading.RLock()
+    
+    def _text_to_vector(self, text: str) -> np.ndarray:
+        """
+        Simple text to vector conversion using word embeddings
+        In a real implementation, this would use a proper embedding model like:
+        - sentence-transformers
+        - OpenAI embeddings
+        - Hugging Face transformers
+        
+        For now, we use a simple hash-based approach
+        """
+        words = text.lower().split()
+        vector = np.zeros(self.dimension)
+        
+        for word in words:
+            # Create a simple hash-based vector for each word
+            hash_value = int(hashlib.md5(word.encode()).hexdigest()[:8], 16)
+            
+            # Spread the hash across dimensions
+            for i in range(self.dimension):
+                if (hash_value + i) % (self.dimension * 10) < self.dimension:
+                    vector[i] += (hash_value % 1000) / 1000.0
+        
+        # Normalize vector
+        norm = np.linalg.norm(vector)
+        if norm > 0:
+            vector = vector / norm
+        
+        return vector
+    
+    def get_embedding(self, text: str) -> np.ndarray:
+        """
+        Get embedding for text
+        
+        Args:
+            text: Input text
+            
+        Returns:
+            Numpy array embedding
+        """
+        with self.lock:
+            if text not in self.word_vectors:
+                self.word_vectors[text] = self._text_to_vector(text)
+            return self.word_vectors[text].copy()
+    
+    def similarity(self, text1: str, text2: str) -> float:
+        """
+        Calculate cosine similarity between two texts
+        
+        Args:
+            text1: First text
+            text2: Second text
+            
+        Returns:
+            Similarity score (0-1)
+        """
+        vec1 = self.get_embedding(text1)
+        vec2 = self.get_embedding(text2)
+        
+        # Cosine similarity
+        dot_product = np.dot(vec1, vec2)
+        norm_product = np.linalg.norm(vec1) * np.linalg.norm(vec2)
+        
+        if norm_product == 0:
+            return 0.0
+        
+        return max(0.0, min(1.0, dot_product / norm_product))
+
+
+class VectorMemory:
+    """
+    Vector-based memory system for semantic search and retrieval
+    """
+    
+    def __init__(
+        self, 
+        max_vectors: int = 10000,
+        embedding_dimension: int = 384,
+        similarity_threshold: float = 0.7
+    ):
+        """
+        Initialize vector memory
+        
+        Args:
+            max_vectors: Maximum number of vectors to store
+            embedding_dimension: Dimension of embedding vectors
+            similarity_threshold: Minimum similarity for search results
+        """
+        self.max_vectors = max_vectors
+        self.similarity_threshold = similarity_threshold
+        self.embedding_dimension = embedding_dimension
+        self.embedding = VectorEmbedding(embedding_dimension)
+        
+        # Storage
+        self.vectors: Dict[str, Dict[str, Any]] = {}
+        self.content_index: Dict[str, str] = {}  # content_hash -> vector_id
+        self.lock = threading.RLock()
+        
+        # Statistics
+        self.total_searches = 0
+        self.successful_searches = 0
+        self.avg_similarity_score = 0.0
+        
+        logger.info(f"Vector Memory initialized: max_vectors={max_vectors}, dimension={embedding_dimension}")
+    
+    def _get_content_hash(self, content: str) -> str:
+        """Get hash of content for deduplication"""
+        return hashlib.md5(content.encode()).hexdigest()
+    
+    def add_memory(
+        self,
+        content: str,
+        memory_type: MemoryType,
+        importance: float = 0.5,
+        tags: List[str] = None,
+        metadata: Dict[str, Any] = None
+    ) -> str:
+        """
+        Add memory to vector storage
+        
+        Args:
+            content: Memory content
+            memory_type: Type of memory
+            importance: Importance score (0-1)
+            tags: List of tags
+            metadata: Additional metadata
+        
+        Returns:
+            Memory ID
+        """
+        memory_id = str(uuid.uuid4())
+        
+        with self.lock:
+            try:
+                # Check if we're at capacity
+                if len(self.vectors) >= self.max_vectors:
+                    # Remove least important memory
+                    self._evict_least_important()
+                
+                # Get embedding
+                embedding = self.embedding.get_embedding(content)
+                
+                # Store vector
+                self.vectors[memory_id] = {
+                    "id": memory_id,
+                    "content": content,
+                    "embedding": embedding,
+                    "memory_type": memory_type.value,
+                    "importance": importance,
+                    "tags": tags or [],
+                    "metadata": metadata or {},
+                    "timestamp": datetime.now(),
+                    "access_count": 0,
+                    "last_accessed": datetime.now()
+                }
+                
+                # Update content index
+                content_hash = self._get_content_hash(content)
+                self.content_index[content_hash] = memory_id
+                
+                logger.debug(f"Added vector memory: {memory_id}")
+                return memory_id
+                
+            except Exception as e:
+                logger.error(f"Failed to add vector memory: {e}")
+                return ""
+    
+    def _evict_least_important(self):
+        """Remove least important memories to make space"""
+        if not self.vectors:
+            return
+        
+        # Sort by importance and access count
+        sorted_memories = sorted(
+            self.vectors.items(),
+            key=lambda x: (x[1]["importance"], x[1]["access_count"])
+        )
+        
+        # Remove least important memories (up to 10% of total)
+        evict_count = max(1, len(self.vectors) // 10)
+        for i in range(evict_count):
+            memory_id, memory_data = sorted_memories[i]
+            content_hash = self._get_content_hash(memory_data["content"])
+            
+            del self.vectors[memory_id]
+            if content_hash in self.content_index:
+                del self.content_index[content_hash]
+        
+        logger.debug(f"Evicted {evict_count} memories to make space")
+    
+    def search(
+        self,
+        query: str,
+        limit: int = 10,
+        threshold: float = None,
+        memory_type: MemoryType = None,
+        tags: List[str] = None
+    ) -> List[VectorSearchResult]:
+        """
+        Search for similar memories using vector similarity
+        
+        Args:
+            query: Search query
+            limit: Maximum number of results
+            threshold: Minimum similarity threshold
+            memory_type: Filter by memory type
+            tags: Filter by tags
+        
+        Returns:
+            List of search results
+        """
+        self.total_searches += 1
+        
+        if threshold is None:
+            threshold = self.similarity_threshold
+        
+        with self.lock:
+            try:
+                # Get query embedding
+                query_embedding = self.embedding.get_embedding(query)
+                
+                # Calculate similarities
+                similarities = []
+                
+                for memory_id, memory_data in self.vectors.items():
+                    # Apply filters
+                    if memory_type and memory_data["memory_type"] != memory_type.value:
+                        continue
+                    
+                    if tags and not any(tag in memory_data["tags"] for tag in tags):
+                        continue
+                    
+                    # Calculate cosine similarity
+                    memory_embedding = memory_data["embedding"]
+                    similarity = self._cosine_similarity(query_embedding, memory_embedding)
+                    
+                    if similarity >= threshold:
+                        similarities.append((memory_id, memory_data, similarity))
+                
+                # Sort by similarity
+                similarities.sort(key=lambda x: x[2], reverse=True)
+                
+                # Limit results
+                similarities = similarities[:limit]
+                
+                # Create results
+                results = []
+                total_similarity = 0.0
+                
+                for memory_id, memory_data, similarity in similarities:
+                    # Update access statistics
+                    memory_data["access_count"] += 1
+                    memory_data["last_accessed"] = datetime.now()
+                    total_similarity += similarity
+                    
+                    result = VectorSearchResult(
+                        content=memory_data["content"],
+                        similarity_score=similarity,
+                        metadata={
+                            "id": memory_id,
+                            "memory_type": memory_data["memory_type"],
+                            "importance": memory_data["importance"],
+                            "tags": memory_data["tags"],
+                            "timestamp": memory_data["timestamp"].isoformat(),
+                            "access_count": memory_data["access_count"]
+                        }
+                    )
+                    results.append(result)
+                
+                # Update statistics
+                if similarities:
+                    self.avg_similarity_score = (
+                        (self.avg_similarity_score * (self.total_searches - 1) + 
+                         total_similarity / len(similarities)) / self.total_searches
+                    )
+                    self.successful_searches += 1
+                
+                logger.debug(f"Vector search: query='{query[:50]}...', results={len(results)}")
+                return results
+                
+            except Exception as e:
+                logger.error(f"Vector search failed: {e}")
+                return []
+    
+    def _cosine_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
+        """Calculate cosine similarity between two vectors"""
+        dot_product = np.dot(vec1, vec2)
+        norm_product = np.linalg.norm(vec1) * np.linalg.norm(vec2)
+        
+        if norm_product == 0:
+            return 0.0
+        
+        return max(0.0, min(1.0, dot_product / norm_product))
+    
+    def get_memories_by_type(self, memory_type: MemoryType, limit: int = 100) -> List[MemoryEntry]:
+        """
+        Get memories by type
+        
+        Args:
+            memory_type: Type of memories to retrieve
+            limit: Maximum number of memories
+        
+        Returns:
+            List of MemoryEntry objects
+        """
+        with self.lock:
+            try:
+                memories = []
+                count = 0
+                
+                for memory_id, memory_data in self.vectors.items():
+                    if memory_data["memory_type"] == memory_type.value and count < limit:
+                        memory = MemoryEntry(
+                            id=memory_data["id"],
+                            content=memory_data["content"],
+                            memory_type=MemoryType(memory_data["memory_type"]),
+                            importance=memory_data["importance"],
+                            tags=memory_data["tags"],
+                            timestamp=memory_data["timestamp"],
+                            metadata=memory_data["metadata"]
+                        )
+                        memories.append(memory)
+                        count += 1
+                
+                return memories
+                
+            except Exception as e:
+                logger.error(f"Failed to get memories by type: {e}")
+                return []
+    
+    def get_important_memories(self, min_importance: float = 0.7, limit: int = 50) -> List[MemoryEntry]:
+        """
+        Get important memories
+        
+        Args:
+            min_importance: Minimum importance score
+            limit: Maximum number of memories
+        
+        Returns:
+            List of MemoryEntry objects
+        """
+        with self.lock:
+            try:
+                important_memories = []
+                
+                for memory_id, memory_data in self.vectors.items():
+                    if memory_data["importance"] >= min_importance:
+                        memory = MemoryEntry(
+                            id=memory_data["id"],
+                            content=memory_data["content"],
+                            memory_type=MemoryType(memory_data["memory_type"]),
+                            importance=memory_data["importance"],
+                            tags=memory_data["tags"],
+                            timestamp=memory_data["timestamp"],
+                            metadata=memory_data["metadata"]
+                        )
+                        important_memories.append(memory)
+                
+                # Sort by importance and access count
+                important_memories.sort(
+                    key=lambda m: (m.importance, m.metadata.get("access_count", 0)),
+                    reverse=True
+                )
+                
+                return important_memories[:limit]
+                
+            except Exception as e:
+                logger.error(f"Failed to get important memories: {e}")
+                return []
+    
+    def update_memory_importance(self, memory_id: str, new_importance: float) -> bool:
+        """
+        Update memory importance score
+        
+        Args:
+            memory_id: Memory ID
+            new_importance: New importance score (0-1)
+        
+        Returns:
+            Success status
+        """
+        with self.lock:
+            try:
+                if memory_id in self.vectors:
+                    self.vectors[memory_id]["importance"] = max(0.0, min(1.0, new_importance))
+                    return True
+                return False
+                
+            except Exception as e:
+                logger.error(f"Failed to update memory importance: {e}")
+                return False
+    
+    def delete_memory(self, memory_id: str) -> bool:
+        """
+        Delete a memory
+        
+        Args:
+            memory_id: Memory ID to delete
+        
+        Returns:
+            Success status
+        """
+        with self.lock:
+            try:
+                if memory_id in self.vectors:
+                    content_hash = self._get_content_hash(self.vectors[memory_id]["content"])
+                    
+                    del self.vectors[memory_id]
+                    if content_hash in self.content_index:
+                        del self.content_index[content_hash]
+                    
+                    return True
+                return False
+                
+            except Exception as e:
+                logger.error(f"Failed to delete memory: {e}")
+                return False
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """
+        Get vector memory statistics
+        
+        Returns:
+            Dictionary with memory statistics
+        """
+        with self.lock:
+            try:
+                # Calculate memory type distribution
+                type_counts = defaultdict(int)
+                total_importance = 0.0
+                total_access_count = 0
+                
+                for memory_data in self.vectors.values():
+                    type_counts[memory_data["memory_type"]] += 1
+                    total_importance += memory_data["importance"]
+                    total_access_count += memory_data["access_count"]
+                
+                avg_importance = total_importance / len(self.vectors) if self.vectors else 0.0
+                avg_access_count = total_access_count / len(self.vectors) if self.vectors else 0.0
+                
+                return {
+                    "total_memories": len(self.vectors),
+                    "max_vectors": self.max_vectors,
+                    "capacity_usage": len(self.vectors) / self.max_vectors,
+                    "embedding_dimension": self.embedding_dimension,
+                    "similarity_threshold": self.similarity_threshold,
+                    "memory_type_distribution": dict(type_counts),
+                    "average_importance": avg_importance,
+                    "average_access_count": avg_access_count,
+                    "total_searches": self.total_searches,
+                    "successful_searches": self.successful_searches,
+                    "search_success_rate": (
+                        self.successful_searches / self.total_searches 
+                        if self.total_searches > 0 else 0.0
+                    ),
+                    "average_similarity_score": self.avg_similarity_score
+                }
+                
+            except Exception as e:
+                logger.error(f"Failed to get statistics: {e}")
+                return {}
+    
+    def clear(self):
+        """Clear all memories"""
+        with self.lock:
+            self.vectors.clear()
+            self.content_index.clear()
+            logger.info("Vector memory cleared")
+    
+    def shutdown(self):
+        """Shutdown vector memory system"""
+        logger.info("Shutting down Vector Memory")
+
+
+# Global vector memory instance
+_vector_memory_instance: Optional[VectorMemory] = None
+_vector_memory_lock = threading.Lock()
+
+
+def get_vector_memory(
+    max_vectors: int = 10000,
+    embedding_dimension: int = 384,
+    similarity_threshold: float = 0.7
+) -> VectorMemory:
+    """
+    Get singleton vector memory instance
+    
+    Args:
+        max_vectors: Maximum number of vectors to store
+        embedding_dimension: Dimension of embedding vectors
+        similarity_threshold: Minimum similarity threshold
+    
+    Returns:
+        VectorMemory singleton instance
+    """
+    global _vector_memory_instance
+    
+    if _vector_memory_instance is None:
+        with _vector_memory_lock:
+            if _vector_memory_instance is None:
+                _vector_memory_instance = VectorMemory(
+                    max_vectors=max_vectors,
+                    embedding_dimension=embedding_dimension,
+                    similarity_threshold=similarity_threshold
+                )
+    
+    return _vector_memory_instance
+
+
+def reset_vector_memory() -> None:
+    """Reset the vector memory instance"""
+    global _vector_memory_instance
+    with _vector_memory_lock:
+        if _vector_memory_instance:
+            try:
+                _vector_memory_instance.shutdown()
+            except Exception:
+                pass
+        _vector_memory_instance = None
+    logger.info("Vector Memory instance reset")
+
+
+def create_vector_memory_instance(
+    max_vectors: int = 10000,
+    embedding_dimension: int = 384,
+    similarity_threshold: float = 0.7
+) -> VectorMemory:
+    """
+    Create a new vector memory instance
+    
+    Args:
+        max_vectors: Maximum number of vectors to store
+        embedding_dimension: Dimension of embedding vectors
+        similarity_threshold: Minimum similarity threshold
+    
+    Returns:
+        New VectorMemory instance
+    """
+    return VectorMemory(max_vectors, embedding_dimension, similarity_threshold)
