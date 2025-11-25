@@ -342,7 +342,7 @@ class CollaborativeAgent:
 class UnifiedMemory:
     """Unified memory system with multiple storage types"""
 
-    def __init__(self):
+def __init__(self):
         self.short_term: Dict[str, Any] = {}
         self.working_memory: Dict[str, Any] = {}
         self.long_term: Dict[str, Any] = {}
@@ -351,6 +351,34 @@ class UnifiedMemory:
         self.procedural: Dict[str, Any] = {}
         self._access_times: Dict[str, datetime] = {}
         self._max_memory_size = 1000  # Limit memory usage
+        
+        # Advanced memory features
+        self.memory_blocks: Dict[str, Any] = {}
+        self.shared_memory: Dict[str, Any] = {}
+        self.context_windows: Dict[str, List[Dict[str, Any]]] = {}
+        self.memory_embeddings: Dict[str, List[float]] = {}
+        
+        # Initialize advanced memory skill if available
+        try:
+            from advanced_memory_skill import AdvancedMemorySkill
+            self.advanced_memory = AdvancedMemorySkill()
+            logger.info("Advanced memory system activated")
+        except ImportError as e:
+            logger.warning(f"Advanced memory skill not available: {e}")
+            self.advanced_memory = None
+        
+        # Initialize enhanced error handler
+        try:
+            from enhanced_error_handler import get_error_handler, ErrorSeverity, ErrorCategory
+            self.error_handler = get_error_handler()
+            self.ErrorSeverity = ErrorSeverity
+            self.ErrorCategory = ErrorCategory
+            logger.info("Enhanced error handling system activated")
+        except ImportError as e:
+            logger.warning(f"Enhanced error handler not available: {e}")
+            self.error_handler = None
+            self.ErrorSeverity = None
+            self.ErrorCategory = None
 
     def store(self, key: str, value: Any, memory_type: MemoryType = MemoryType.WORKING):
         """Store information in appropriate memory system"""
@@ -432,8 +460,146 @@ class UnifiedMemory:
                       self.semantic, self.procedural]:
             memory.pop(key, None)
 
-        # Remove from episodic memory
+# Remove from episodic memory
         self.episodic = [ep for ep in self.episodic if ep.get('key') != key]
+
+    def create_memory_block(self, label: str, value: str, block_type: str = 'context', 
+                           metadata: Dict[str, Any] = None) -> str:
+        """Create an advanced memory block"""
+        block_id = str(uuid.uuid4())
+        block = {
+            'id': block_id,
+            'label': label,
+            'value': value,
+            'block_type': block_type,
+            'created_at': datetime.now(),
+            'updated_at': datetime.now(),
+            'metadata': metadata or {}
+        }
+        
+        self.memory_blocks[block_id] = block
+        
+        # Also store in appropriate memory type
+        if block_type == 'persistent':
+            self.store(block_id, block, MemoryType.LONG_TERM)
+        elif block_type == 'shared':
+            self.shared_memory[block_id] = block
+        else:
+            self.store(block_id, block, MemoryType.WORKING)
+            
+        logger.info(f"Created memory block '{label}' ({block_type})")
+        return block_id
+
+    def search_memory(self, query: str, memory_types: List[MemoryType] = None) -> List[Dict[str, Any]]:
+        """Search across memory types for relevant information"""
+        results = []
+        
+        # Search in memory blocks
+        for block_id, block in self.memory_blocks.items():
+            if query.lower() in block['label'].lower() or query.lower() in block['value'].lower():
+                results.append({
+                    'type': 'memory_block',
+                    'id': block_id,
+                    'content': block,
+                    'relevance': self._calculate_relevance(query, block)
+                })
+        
+        # Search in traditional memory stores
+        if memory_types is None:
+            memory_types = [MemoryType.WORKING, MemoryType.LONG_TERM, MemoryType.SEMANTIC]
+            
+        memory_map = {
+            MemoryType.SHORT_TERM: self.short_term,
+            MemoryType.WORKING: self.working_memory,
+            MemoryType.LONG_TERM: self.long_term,
+            MemoryType.EPISODIC: self.episodic,
+            MemoryType.SEMANTIC: self.semantic,
+            MemoryType.PROCEDURAL: self.procedural
+        }
+        
+        for mem_type in memory_types:
+            if mem_type == MemoryType.EPISODIC:
+                for episode in self.episodic:
+                    if query.lower() in str(episode.get('value', '')).lower():
+                        results.append({
+                            'type': 'episodic',
+                            'content': episode,
+                            'relevance': self._calculate_relevance(query, episode)
+                        })
+            else:
+                memory_store = memory_map[mem_type]
+                for key, value in memory_store.items():
+                    if query.lower() in key.lower() or query.lower() in str(value).lower():
+                        results.append({
+                            'type': mem_type.value,
+                            'key': key,
+                            'content': value,
+                            'relevance': self._calculate_relevance(query, {'key': key, 'value': value})
+                        })
+        
+        # Sort by relevance
+        results.sort(key=lambda x: x['relevance'], reverse=True)
+        return results[:10]  # Return top 10 results
+
+    def _calculate_relevance(self, query: str, item: Dict[str, Any]) -> float:
+        """Calculate relevance score for search results"""
+        query_lower = query.lower()
+        item_str = str(item).lower()
+        
+        # Simple relevance calculation based on term frequency
+        exact_match = 1.0 if query_lower in item_str else 0.0
+        partial_match = len([word for word in query_lower.split() if word in item_str]) / max(len(query_lower.split()), 1)
+        
+        return (exact_match * 0.7 + partial_match * 0.3)
+
+    def create_context_window(self, session_id: str, max_size: int = 10) -> str:
+        """Create a context window for a session"""
+        if session_id not in self.context_windows:
+            self.context_windows[session_id] = []
+        
+        window_id = str(uuid.uuid4())
+        self.context_windows[session_id].append({
+            'id': window_id,
+            'created_at': datetime.now(),
+            'messages': [],
+            'max_size': max_size
+        })
+        
+        return window_id
+
+    def add_to_context(self, session_id: str, window_id: str, message: Dict[str, Any]):
+        """Add message to context window"""
+        if session_id in self.context_windows:
+            for window in self.context_windows[session_id]:
+                if window['id'] == window_id:
+                    window['messages'].append(message)
+                    # Maintain max size
+                    if len(window['messages']) > window['max_size']:
+                        window['messages'] = window['messages'][-window['max_size']:]
+
+    def get_memory_summary(self) -> Dict[str, Any]:
+        """Get comprehensive memory summary"""
+        return {
+            'memory_blocks': len(self.memory_blocks),
+            'shared_memory': len(self.shared_memory),
+            'context_windows': len(self.context_windows),
+            'traditional_memory': {
+                'short_term': len(self.short_term),
+                'working_memory': len(self.working_memory),
+                'long_term': len(self.long_term),
+                'episodic': len(self.episodic),
+                'semantic': len(self.semantic),
+                'procedural': len(self.procedural)
+            },
+            'total_memory_items': self._get_total_memory_items()
+        }
+
+    def _get_total_memory_items(self) -> int:
+        """Get total count of all memory items"""
+        return (len(self.memory_blocks) + len(self.shared_memory) + 
+                len(self.short_term) + len(self.working_memory) + 
+                len(self.long_term) + len(self.episodic) + 
+                len(self.semantic) + len(self.procedural))
 
 class PerformanceMonitor:
     """Real-time performance monitoring system"""
@@ -531,6 +697,17 @@ class ModelSelectionEngine:
         self.models = self._load_free_models()
         self.performance_history: Dict[str, List[float]] = {}
         self.fallback_chain = self._create_fallback_chain()
+        
+        # Import and integrate the intelligent model router
+        try:
+            from intelligent_model_router import get_router, TaskType
+            self.intelligent_router = get_router()
+            self.TaskType = TaskType
+            logger.info("Integrated intelligent model router")
+        except ImportError as e:
+            logger.warning(f"Could not import intelligent model router: {e}")
+            self.intelligent_router = None
+            self.TaskType = None
 
     def _load_free_models(self) -> Dict[str, Dict[str, Any]]:
         """Load the current free models configuration"""
@@ -624,6 +801,70 @@ class ModelSelectionEngine:
                 best_model = model_name
 
         return best_model or suitable_models[0]
+
+    def select_model_intelligent(self, task_description: str, task_type: str = None,
+                                user_preferences: Dict[str, Any] = None,
+                                budget_constraint: float = None,
+                                time_constraint: float = None) -> Dict[str, Any]:
+        """
+        Enhanced model selection using intelligent router when available
+        
+        Returns:
+            Dict with selected_model, confidence, reasoning, and fallback info
+        """
+        if self.intelligent_router and self.TaskType:
+            try:
+                # Map task type string to enum
+                task_type_enum = None
+                if task_type:
+                    task_type_map = {
+                        "coding": self.TaskType.CODE_GENERATION,
+                        "analysis": self.TaskType.DATA_ANALYSIS,
+                        "conversation": self.TaskType.CONVERSATION,
+                        "reasoning": self.TaskType.REASONING,
+                        "complex_reasoning": self.TaskType.COMPLEX_PROBLEM_SOLVING
+                    }
+                    task_type_enum = task_type_map.get(task_type.lower())
+                
+                # Use intelligent router
+                decision = self.intelligent_router.route_request(
+                    task_description=task_description,
+                    task_type=task_type_enum,
+                    user_preferences=user_preferences,
+                    budget_constraint=budget_constraint,
+                    time_constraint=time_constraint
+                )
+                
+                # Record the routing decision for learning
+                result = {
+                    "selected_model": decision.selected_model,
+                    "confidence": decision.confidence,
+                    "reasoning": decision.reasoning,
+                    "alternatives": decision.alternatives,
+                    "estimated_cost": decision.estimated_cost,
+                    "estimated_time": decision.estimated_time,
+                    "fallback_available": decision.fallback_available,
+                    "routing_method": "intelligent"
+                }
+                
+                logger.info(f"Intelligent routing selected {decision.selected_model} with confidence {decision.confidence:.2f}")
+                return result
+                
+            except Exception as e:
+                logger.warning(f"Intelligent routing failed, falling back to legacy: {e}")
+        
+        # Fallback to legacy selection
+        legacy_model = self.select_model(task_type or "balanced", "moderate", 1024, "balanced")
+        return {
+            "selected_model": legacy_model,
+            "confidence": 0.6,
+            "reasoning": "Used legacy model selection (intelligent router unavailable)",
+            "alternatives": [],
+            "estimated_cost": 0.0,
+            "estimated_time": self.models.get(legacy_model, {}).get("response_time", 2.0),
+            "fallback_available": True,
+            "routing_method": "legacy"
+        }
 
     def _calculate_model_score(self, model_name: str, priority: str) -> float:
         """Calculate score for model selection"""
@@ -925,13 +1166,15 @@ class UnifiedBrain:
             # Analyze task type and complexity
             task_analysis = self._analyze_task(message_content)
 
-            # Select appropriate model
-            selected_model = self.model_engine.select_model(
+# Select appropriate model using intelligent routing
+            model_selection = self.model_engine.select_model_intelligent(
+                task_description=message_content,
                 task_type=task_analysis["type"],
-                complexity=task_analysis["complexity"],
-                context_length=task_analysis["context_length"],
-                priority=task_analysis["priority"]
+                user_preferences={"prefer_fast": task_analysis["priority"] == "speed"},
+                budget_constraint=None,
+                time_constraint=2.0 if task_analysis["priority"] == "speed" else None
             )
+            selected_model = model_selection["selected_model"]
 
             # Execute reasoning strategy
             reasoning_result = await self._execute_reasoning(
@@ -960,18 +1203,50 @@ class UnifiedBrain:
                 "reasoning_steps": self.reasoning_steps,
                 "performance": {
                     "response_time": response_time,
-                    "model_selection": task_analysis
+                    "model_selection": task_analysis,
+                    "intelligent_routing": model_selection
                 }
             }
 
-        except Exception as e:
+except Exception as e:
             response_time = time.time() - start_time
             self.performance_monitor.record_request(False, response_time)
-
+            
+            # Enhanced error handling
+            error_context = {
+                'message_content': message_content[:200],
+                'metadata': metadata,
+                'processing_time': response_time,
+                'component': 'UnifiedBrain.process_message'
+            }
+            
+            # Use enhanced error handler if available
+            if self.error_handler:
+                try:
+                    import asyncio
+                    error_record = asyncio.run(self.error_handler.handle_error(
+                        e, error_context, self.ErrorSeverity.MEDIUM
+                    ))
+                    
+                    return {
+                        "success": False,
+                        "error": str(e),
+                        "error_id": error_record.id,
+                        "error_category": error_record.category.value,
+                        "recovery_attempted": error_record.recovery_action is not None,
+                        "recovery_successful": error_record.recovery_successful,
+                        "response_time": response_time,
+                        "enhanced_error_handling": True
+                    }
+                except Exception as handler_error:
+                    logger.error(f"Enhanced error handler failed: {handler_error}")
+            
+            # Fallback to basic error handling
             return {
                 "success": False,
                 "error": str(e),
-                "response_time": response_time
+                "response_time": response_time,
+                "enhanced_error_handling": False
             }
         finally:
             self.is_processing = False

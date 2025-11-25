@@ -57,6 +57,10 @@ class TONLSkill(BaseSkill):
     TONL Skill for Neo-Clone
     Provides efficient data encoding/decoding for LLM token optimization
     """
+    """
+    TONL Skill for Neo-Clone
+    Provides efficient data encoding/decoding for LLM token optimization
+    """
     
     def __init__(self):
         if BASESKILL_AVAILABLE:
@@ -585,3 +589,7 @@ def tonl_analyze(data: Any) -> Dict[str, Any]:
             'success': False,
             'error': result.error
         }
+
+
+# Alias for compatibility with import statements expecting 'TonlSkill'
+TonlSkill = TONLSkill

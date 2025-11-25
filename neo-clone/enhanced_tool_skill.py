@@ -364,8 +364,13 @@ class EnhancedToolSkill(BaseSkill):
             self.mcp_client = MCPClient(self.mcp_config)
             await self.mcp_client.start()
             
-            # Discover available tools
-            await self.mcp_client.discover_tools()
+            # Discover available tools with error handling
+            try:
+                discovered_tools = await self.mcp_client.discover_tools()
+                logger.info(f"MCP discovered {len(discovered_tools)} tools")
+            except Exception as discovery_error:
+                logger.warning(f"MCP tool discovery failed: {discovery_error}")
+                # Continue with client even if discovery fails
             
             logger.info("MCP client initialized successfully")
         except Exception as e:
