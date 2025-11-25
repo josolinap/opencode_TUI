@@ -68,3 +68,5 @@ Thumbs.db
 
 # Test and demo organization (these should go in examples/ and tests/ directories)
 # Keep these patterns to prevent future accumulation in root
+# Allow proper test files in tests/ directory
+!tests/test_*.py
