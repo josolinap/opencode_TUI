@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+"""
+Neo-Clone Monitoring System Installation Script
+
+This script provides easy installation with optional dependencies based on user needs.
+"""
+
+import subprocess
+import sys
+import os
+from typing import List, Dict, Optional
+
+def run_command(command: List[str], description: str) -> bool:
+    """Run a command and return success status"""
+    print(f"\n🔧 {description}...")
+    try:
+        result = subprocess.run(command, check=True, capture_output=True, text=True)
+        print(f"✅ {description} completed successfully")
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"❌ {description} failed:")
+        print(f"   Error: {e.stderr}")
+        return False
+
+def check_python_version() -> bool:
+    """Check if Python version is compatible"""
+    version = sys.version_info
+    if version.major < 3 or (version.major == 3 and version.minor < 8):
+        print(f"❌ Python {version.major}.{version.minor} detected. Python 3.8+ required.")
+        return False
+    print(f"✅ Python {version.major}.{version.minor}.{version.micro} detected")
+    return True
+
+def install_core_dependencies() -> bool:
+    """Install core monitoring dependencies"""
+    core_deps = [
+        "asyncio-throttle>=1.0.2",
+    ]
+    
+    for dep in core_deps:
+        if not run_command([sys.executable, "-m", "pip", "install", dep], f"Installing {dep}"):
+            return False
+    return True
+
+def install_optional_features() -> None:
+    """Install optional features based on user choice"""
+    print("\n📦 Optional Features Installation:")
+    print("1. Basic Profiling (psutil)")
+    print("2. Distributed Tracing (OpenTelemetry)")
+    print("3. Metrics Collection (Prometheus)")
+    print("4. TUI Dashboard (Textual + Rich)")
+    print("5. Advanced Profiling (memory_profiler, pyinstrument)")
+    print("6. All Features")
+    print("7. Skip optional features")
+    
+    while True:
+        try:
+            choice = input("\nSelect features to install (1-7): ").strip()
+            if choice in ["1", "2", "3", "4", "5", "6", "7"]:
+                break
+            print("Invalid choice. Please select 1-7.")
+        except KeyboardInterrupt:
+            print("\nInstallation cancelled.")
+            return
+    
+    feature_packages = {
+        "1": ["psutil>=5.9.0"],
+        "2": [
+            "opentelemetry-api>=1.20.0",
+            "opentelemetry-sdk>=1.20.0",
+            "opentelemetry-exporter-jaeger>=1.20.0",
+            "opentelemetry-exporter-otlp>=1.20.0",
+        ],
+        "3": ["prometheus-client>=0.17.0"],
+        "4": ["textual>=0.41.0", "rich>=13.0.0"],
+        "5": ["memory-profiler>=0.60.0", "pyinstrument>=4.4.0"],
+        "6": [
+            "psutil>=5.9.0",
+            "opentelemetry-api>=1.20.0",
+            "opentelemetry-sdk>=1.20.0",
+            "opentelemetry-exporter-jaeger>=1.20.0",
+            "opentelemetry-exporter-otlp>=1.20.0",
+            "prometheus-client>=0.17.0",
+            "textual>=0.41.0",
+            "rich>=13.0.0",
+            "memory-profiler>=0.60.0",
+            "pyinstrument>=4.4.0",
+        ]
+    }
+    
+    if choice == "7":
+        print("⏭️  Skipping optional features")
+        return
+    
+    packages = feature_packages.get(choice, [])
+    for package in packages:
+        if not run_command([sys.executable, "-m", "pip", "install", package], f"Installing {package}"):
+            print(f"⚠️  Failed to install {package}. You can install it later manually.")
+
+def create_config_file() -> None:
+    """Create a default configuration file"""
+    config_dir = os.path.expanduser("~/.neo-clone")
+    config_file = os.path.join(config_dir, "monitoring_config.json")
+    
+    os.makedirs(config_dir, exist_ok=True)
+    
+    default_config = {
+        "monitoring": {
+            "enabled": True,
+            "tracing_enabled": True,
+            "metrics_enabled": True,
+            "profiling_enabled": True,
+            "dashboard_enabled": True,
+        },
+        "performance": {
+            "cpu_threshold": 80.0,
+            "memory_threshold": 85.0,
+            "response_time_threshold": 2000.0,
+        },
+        "tracing": {
+            "service_name": "neo-clone-opencode",
+            "sample_rate": 0.1,
+            "endpoint": None,
+        },
+        "metrics": {
+            "export_interval": 30.0,
+            "endpoint": None,
+        }
+    }
+    
+    import json
+    with open(config_file, "w") as f:
+        json.dump(default_config, f, indent=2)
+    
+    print(f"✅ Configuration file created: {config_file}")
+
+def verify_installation() -> None:
+    """Verify that monitoring system can be imported"""
+    print("\n🔍 Verifying installation...")
+    
+    try:
+        # Test basic imports
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        
+        from monitoring_integration import get_global_monitoring
+        monitoring = get_global_monitoring()
+        
+        print("✅ Monitoring system imported successfully")
+        print(f"   Status: {'Initialized' if monitoring.status.initialized else 'Not initialized'}")
+        
+        # Test optional features
+        try:
+            import psutil
+            print("✅ psutil available - system monitoring enabled")
+        except ImportError:
+            print("⚠️  psutil not available - limited system monitoring")
+        
+        try:
+            import opentelemetry
+            print("✅ OpenTelemetry available - distributed tracing enabled")
+        except ImportError:
+            print("⚠️  OpenTelemetry not available - mock tracing only")
+        
+        try:
+            import prometheus_client
+            print("✅ Prometheus client available - metrics export enabled")
+        except ImportError:
+            print("⚠️  Prometheus client not available - limited metrics")
+        
+        try:
+            import textual
+            print("✅ Textual available - TUI dashboard enabled")
+        except ImportError:
+            print("⚠️  Textual not available - dashboard disabled")
+            
+    except Exception as e:
+        print(f"❌ Verification failed: {e}")
+        print("   The monitoring system may not work correctly.")
+
+def main() -> None:
+    """Main installation function"""
+    print("🚀 Neo-Clone Monitoring System Installation")
+    print("=" * 50)
+    
+    # Check Python version
+    if not check_python_version():
+        sys.exit(1)
+    
+    # Install core dependencies
+    if not install_core_dependencies():
+        print("❌ Core dependencies installation failed")
+        sys.exit(1)
+    
+    # Install optional features
+    install_optional_features()
+    
+    # Create configuration
+    create_config_file()
+    
+    # Verify installation
+    verify_installation()
+    
+    print("\n🎉 Installation completed!")
+    print("\nNext steps:")
+    print("1. Import monitoring in your code:")
+    print("   from neo_clone.monitoring import get_global_monitoring")
+    print("2. Start monitoring:")
+    print("   monitoring = get_global_monitoring()")
+    print("3. Monitor operations:")
+    print("   with monitoring.MonitoredOperation('my_operation'):")
+    print("       # Your code here")
+    print("\nFor more information, see README.md")
+
+if __name__ == "__main__":
+    main()

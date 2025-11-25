@@ -1,0 +1,500 @@
+"""
+Production-Ready Error Handling for Neo-Clone Monitoring System
+
+This module provides comprehensive error handling, logging, and recovery mechanisms
+for the monitoring system to ensure robust operation in production environments.
+"""
+
+import logging
+import traceback
+import sys
+import time
+import threading
+from typing import Any, Optional, Dict, List, Callable, Union
+from dataclasses import dataclass
+from enum import Enum
+from datetime import datetime, timedelta
+from functools import wraps
+import json
+import os
+
+
+class ErrorSeverity(Enum):
+    """Error severity levels"""
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class ErrorCategory(Enum):
+    """Error categories for classification"""
+    IMPORT_ERROR = "import_error"
+    CONFIGURATION_ERROR = "configuration_error"
+    RUNTIME_ERROR = "runtime_error"
+    NETWORK_ERROR = "network_error"
+    FILESYSTEM_ERROR = "filesystem_error"
+    MEMORY_ERROR = "memory_error"
+    PERFORMANCE_ERROR = "performance_error"
+    DEPENDENCY_ERROR = "dependency_error"
+
+
+@dataclass
+class ErrorReport:
+    """Structured error report"""
+    timestamp: datetime
+    severity: ErrorSeverity
+    category: ErrorCategory
+    message: str
+    exception_type: str
+    traceback: str
+    context: Dict[str, Any]
+    component: str
+    recovery_attempted: bool = False
+    recovery_successful: bool = False
+    retry_count: int = 0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization"""
+        return {
+            "timestamp": self.timestamp.isoformat(),
+            "severity": self.severity.value,
+            "category": self.category.value,
+            "message": self.message,
+            "exception_type": self.exception_type,
+            "traceback": self.traceback,
+            "context": self.context,
+            "component": self.component,
+            "recovery_attempted": self.recovery_attempted,
+            "recovery_successful": self.recovery_successful,
+            "retry_count": self.retry_count
+        }
+
+
+class MonitoringErrorHandler:
+    """Centralized error handling for monitoring system"""
+    
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        self.config = config or {}
+        self.logger = self._setup_logger()
+        self.error_reports: List[ErrorReport] = []
+        self.error_callbacks: Dict[ErrorSeverity, List[Callable]] = {
+            severity: [] for severity in ErrorSeverity
+        }
+        self.recovery_strategies: Dict[ErrorCategory, List[Callable]] = {
+            category: [] for category in ErrorCategory
+        }
+        
+        # Error rate limiting
+        self.error_counts: Dict[str, int] = {}
+        self.error_window_start = datetime.now()
+        self.max_errors_per_window = self.config.get('max_errors_per_window', 100)
+        self.error_window_minutes = self.config.get('error_window_minutes', 5)
+        
+        # Circuit breaker pattern
+        self.circuit_breaker_state: Dict[str, Dict[str, Any]] = {}
+        self.circuit_breaker_threshold = self.config.get('circuit_breaker_threshold', 5)
+        self.circuit_breaker_timeout = self.config.get('circuit_breaker_timeout', 60)
+        
+        # Background cleanup thread
+        self.cleanup_thread = threading.Thread(target=self._cleanup_old_errors, daemon=True)
+        self.cleanup_thread.start()
+    
+    def _setup_logger(self) -> logging.Logger:
+        """Setup dedicated error logger"""
+        logger = logging.getLogger("neo_clone.monitoring.errors")
+        
+        if not logger.handlers:
+            # Create file handler
+            log_dir = self.config.get('log_dir', 'logs')
+            os.makedirs(log_dir, exist_ok=True)
+            
+            file_handler = logging.FileHandler(
+                os.path.join(log_dir, 'monitoring_errors.log')
+            )
+            file_handler.setLevel(logging.DEBUG)
+            
+            # Create console handler
+            console_handler = logging.StreamHandler(sys.stderr)
+            console_handler.setLevel(logging.WARNING)
+            
+            # Create formatter
+            formatter = logging.Formatter(
+                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            )
+            file_handler.setFormatter(formatter)
+            console_handler.setFormatter(formatter)
+            
+            logger.addHandler(file_handler)
+            logger.addHandler(console_handler)
+            logger.setLevel(logging.DEBUG)
+        
+        return logger
+    
+    def handle_error(self, 
+                    exception: Exception,
+                    context: Optional[Dict[str, Any]] = None,
+                    component: str = "unknown",
+                    severity: Optional[ErrorSeverity] = None,
+                    category: Optional[ErrorCategory] = None) -> ErrorReport:
+        """Handle an error with comprehensive logging and recovery"""
+        
+        # Determine error details
+        exception_type = type(exception).__name__
+        message = str(exception)
+        traceback_str = traceback.format_exc()
+        
+        # Auto-classify error if not provided
+        if category is None:
+            category = self._classify_error(exception, exception_type)
+        
+        if severity is None:
+            severity = self._determine_severity(exception, category)
+        
+        # Create error report
+        error_report = ErrorReport(
+            timestamp=datetime.now(),
+            severity=severity,
+            category=category,
+            message=message,
+            exception_type=exception_type,
+            traceback=traceback_str,
+            context=context or {},
+            component=component
+        )
+        
+        # Check rate limiting
+        if self._is_rate_limited(error_report):
+            self.logger.warning(f"Error rate limited for {component}: {message}")
+            return error_report
+        
+        # Check circuit breaker
+        if self._is_circuit_breaker_open(component):
+            self.logger.warning(f"Circuit breaker open for {component}: {message}")
+            return error_report
+        
+        # Log error
+        self._log_error(error_report)
+        
+        # Store error report
+        self.error_reports.append(error_report)
+        
+        # Attempt recovery
+        if severity in [ErrorSeverity.HIGH, ErrorSeverity.CRITICAL]:
+            error_report.recovery_attempted = True
+            error_report.recovery_successful = self._attempt_recovery(error_report)
+        
+        # Update circuit breaker
+        self._update_circuit_breaker(component, error_report)
+        
+        # Trigger callbacks
+        self._trigger_error_callbacks(error_report)
+        
+        return error_report
+    
+    def _classify_error(self, exception: Exception, exception_type: str) -> ErrorCategory:
+        """Automatically classify error type"""
+        if isinstance(exception, ImportError):
+            return ErrorCategory.IMPORT_ERROR
+        elif isinstance(exception, (FileNotFoundError, PermissionError, OSError)):
+            return ErrorCategory.FILESYSTEM_ERROR
+        elif isinstance(exception, (ConnectionError, TimeoutError)):
+            return ErrorCategory.NETWORK_ERROR
+        elif isinstance(exception, MemoryError):
+            return ErrorCategory.MEMORY_ERROR
+        elif "config" in exception_type.lower() or "configuration" in str(exception).lower():
+            return ErrorCategory.CONFIGURATION_ERROR
+        elif "dependency" in str(exception).lower():
+            return ErrorCategory.DEPENDENCY_ERROR
+        else:
+            return ErrorCategory.RUNTIME_ERROR
+    
+    def _determine_severity(self, exception: Exception, category: ErrorCategory) -> ErrorSeverity:
+        """Determine error severity based on type and category"""
+        if category in [ErrorCategory.IMPORT_ERROR, ErrorCategory.DEPENDENCY_ERROR]:
+            return ErrorSeverity.HIGH
+        elif category == ErrorCategory.MEMORY_ERROR:
+            return ErrorSeverity.CRITICAL
+        elif isinstance(exception, (ConnectionError, TimeoutError)):
+            return ErrorSeverity.MEDIUM
+        elif isinstance(exception, FileNotFoundError):
+            return ErrorSeverity.LOW
+        else:
+            return ErrorSeverity.MEDIUM
+    
+    def _is_rate_limited(self, error_report: ErrorReport) -> bool:
+        """Check if error should be rate limited"""
+        now = datetime.now()
+        
+        # Reset window if needed
+        if (now - self.error_window_start).total_seconds() > self.error_window_minutes * 60:
+            self.error_counts.clear()
+            self.error_window_start = now
+        
+        # Count error
+        error_key = f"{error_report.component}:{error_report.category.value}"
+        self.error_counts[error_key] = self.error_counts.get(error_key, 0) + 1
+        
+        # Check threshold
+        return self.error_counts[error_key] > self.max_errors_per_window
+    
+    def _is_circuit_breaker_open(self, component: str) -> bool:
+        """Check if circuit breaker is open for component"""
+        if component not in self.circuit_breaker_state:
+            return False
+        
+        state = self.circuit_breaker_state[component]
+        
+        # Check if timeout has passed
+        if (datetime.now() - state['opened_at']).total_seconds() > self.circuit_breaker_timeout:
+            # Reset circuit breaker
+            del self.circuit_breaker_state[component]
+            return False
+        
+        return state['is_open']
+    
+    def _update_circuit_breaker(self, component: str, error_report: ErrorReport):
+        """Update circuit breaker state"""
+        if error_report.severity not in [ErrorSeverity.HIGH, ErrorSeverity.CRITICAL]:
+            return
+        
+        if component not in self.circuit_breaker_state:
+            self.circuit_breaker_state[component] = {
+                'failure_count': 0,
+                'is_open': False,
+                'opened_at': None
+            }
+        
+        state = self.circuit_breaker_state[component]
+        state['failure_count'] += 1
+        
+        if state['failure_count'] >= self.circuit_breaker_threshold:
+            state['is_open'] = True
+            state['opened_at'] = datetime.now()
+            self.logger.warning(f"Circuit breaker opened for {component}")
+    
+    def _log_error(self, error_report: ErrorReport):
+        """Log error with appropriate level"""
+        log_message = (
+            f"[{error_report.component}] {error_report.category.value.upper()}: "
+            f"{error_report.message} ({error_report.exception_type})"
+        )
+        
+        if error_report.severity == ErrorSeverity.CRITICAL:
+            self.logger.critical(log_message)
+        elif error_report.severity == ErrorSeverity.HIGH:
+            self.logger.error(log_message)
+        elif error_report.severity == ErrorSeverity.MEDIUM:
+            self.logger.warning(log_message)
+        else:
+            self.logger.info(log_message)
+        
+        # Log full traceback for high severity errors
+        if error_report.severity in [ErrorSeverity.HIGH, ErrorSeverity.CRITICAL]:
+            self.logger.debug(f"Full traceback:\n{error_report.traceback}")
+    
+    def _attempt_recovery(self, error_report: ErrorReport) -> bool:
+        """Attempt to recover from error"""
+        try:
+            recovery_strategies = self.recovery_strategies.get(error_report.category, [])
+            
+            for strategy in recovery_strategies:
+                try:
+                    if strategy(error_report):
+                        self.logger.info(f"Recovery successful for {error_report.component}")
+                        return True
+                except Exception as e:
+                    self.logger.warning(f"Recovery strategy failed: {e}")
+            
+            # Default recovery strategies
+            if error_report.category == ErrorCategory.MEMORY_ERROR:
+                return self._recover_from_memory_error(error_report)
+            elif error_report.category == ErrorCategory.DEPENDENCY_ERROR:
+                return self._recover_from_dependency_error(error_report)
+            
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"Error during recovery attempt: {e}")
+            return False
+    
+    def _recover_from_memory_error(self, error_report: ErrorReport) -> bool:
+        """Attempt to recover from memory error"""
+        try:
+            import gc
+            gc.collect()
+            self.logger.info("Garbage collection performed for memory error recovery")
+            return True
+        except Exception:
+            return False
+    
+    def _recover_from_dependency_error(self, error_report: ErrorReport) -> bool:
+        """Attempt to recover from dependency error"""
+        try:
+            # Try to reimport the module
+            module_name = error_report.context.get('module_name')
+            if module_name:
+                import importlib
+                importlib.import_module(module_name)
+                self.logger.info(f"Successfully reimported {module_name}")
+                return True
+        except Exception:
+            pass
+        return False
+    
+    def _trigger_error_callbacks(self, error_report: ErrorReport):
+        """Trigger error callbacks for severity level"""
+        callbacks = self.error_callbacks.get(error_report.severity, [])
+        for callback in callbacks:
+            try:
+                callback(error_report)
+            except Exception as e:
+                self.logger.error(f"Error in error callback: {e}")
+    
+    def _cleanup_old_errors(self):
+        """Background cleanup of old error reports"""
+        while True:
+            try:
+                time.sleep(300)  # Run every 5 minutes
+                
+                cutoff_time = datetime.now() - timedelta(hours=24)
+                self.error_reports = [
+                    report for report in self.error_reports 
+                    if report.timestamp > cutoff_time
+                ]
+                
+                # Clean up old circuit breaker states
+                now = datetime.now()
+                for component, state in list(self.circuit_breaker_state.items()):
+                    if (now - state['opened_at']).total_seconds() > self.circuit_breaker_timeout * 2:
+                        del self.circuit_breaker_state[component]
+                        
+            except Exception as e:
+                self.logger.error(f"Error in cleanup thread: {e}")
+    
+    def register_error_callback(self, severity: ErrorSeverity, callback: Callable[[ErrorReport], None]):
+        """Register callback for specific error severity"""
+        self.error_callbacks[severity].append(callback)
+    
+    def register_recovery_strategy(self, category: ErrorCategory, strategy: Callable[[ErrorReport], bool]):
+        """Register recovery strategy for error category"""
+        self.recovery_strategies[category].append(strategy)
+    
+    def get_error_summary(self, hours: int = 24) -> Dict[str, Any]:
+        """Get summary of recent errors"""
+        cutoff_time = datetime.now() - timedelta(hours=hours)
+        recent_errors = [
+            report for report in self.error_reports 
+            if report.timestamp > cutoff_time
+        ]
+        
+        # Group by severity and category
+        by_severity = {}
+        by_category = {}
+        by_component = {}
+        
+        for error in recent_errors:
+            # Count by severity
+            severity = error.severity.value
+            by_severity[severity] = by_severity.get(severity, 0) + 1
+            
+            # Count by category
+            category = error.category.value
+            by_category[category] = by_category.get(category, 0) + 1
+            
+            # Count by component
+            component = error.component
+            by_component[component] = by_component.get(component, 0) + 1
+        
+        return {
+            'time_period_hours': hours,
+            'total_errors': len(recent_errors),
+            'by_severity': by_severity,
+            'by_category': by_category,
+            'by_component': by_component,
+            'recovery_attempts': sum(1 for e in recent_errors if e.recovery_attempted),
+            'recovery_successes': sum(1 for e in recent_errors if e.recovery_successful),
+            'circuit_breakers_open': len([
+                state for state in self.circuit_breaker_state.values() 
+                if state['is_open']
+            ])
+        }
+    
+    def export_error_reports(self, format: str = 'json') -> str:
+        """Export error reports in specified format"""
+        if format.lower() == 'json':
+            return json.dumps([report.to_dict() for report in self.error_reports], indent=2)
+        else:
+            return str(self.error_reports)
+
+
+# Global error handler instance
+_global_error_handler: Optional[MonitoringErrorHandler] = None
+
+
+def get_global_error_handler() -> MonitoringErrorHandler:
+    """Get or create global error handler"""
+    global _global_error_handler
+    if _global_error_handler is None:
+        _global_error_handler = MonitoringErrorHandler()
+    return _global_error_handler
+
+
+def handle_monitoring_error(exception: Exception,
+                          context: Optional[Dict[str, Any]] = None,
+                          component: str = "unknown",
+                          severity: Optional[ErrorSeverity] = None,
+                          category: Optional[ErrorCategory] = None) -> ErrorReport:
+    """Convenience function to handle monitoring errors"""
+    handler = get_global_error_handler()
+    return handler.handle_error(exception, context, component, severity, category)
+
+
+def safe_execute(func: Callable, 
+                default_return: Any = None,
+                context: Optional[Dict[str, Any]] = None,
+                component: str = "unknown") -> Any:
+    """Safely execute a function with error handling"""
+    try:
+        return func()
+    except Exception as e:
+        handle_monitoring_error(e, context, component)
+        return default_return
+
+
+def monitoring_error_handler(component: str = "unknown"):
+    """Decorator for automatic error handling in monitoring functions"""
+    def decorator(func: Callable) -> Callable:
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                context = {
+                    'function': func.__name__,
+                    'args': str(args)[:200],  # Limit length
+                    'kwargs': str(kwargs)[:200]  # Limit length
+                }
+                handle_monitoring_error(e, context, component)
+                raise  # Re-raise after handling
+        return wrapper
+    return decorator
+
+
+def async_monitoring_error_handler(component: str = "unknown"):
+    """Decorator for automatic error handling in async monitoring functions"""
+    def decorator(func: Callable) -> Callable:
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            try:
+                return await func(*args, **kwargs)
+            except Exception as e:
+                context = {
+                    'function': func.__name__,
+                    'args': str(args)[:200],
+                    'kwargs': str(kwargs)[:200]
+                }
+                handle_monitoring_error(e, context, component)
+                raise
+        return wrapper
+    return decorator

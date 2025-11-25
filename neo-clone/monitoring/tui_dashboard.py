@@ -1,0 +1,572 @@
+"""
+TUI Monitoring Dashboard for Neo-Clone Agent in OpenCode
+
+This module provides a real-time monitoring dashboard that integrates with the
+OpenCode TUI interface to display distributed tracing and metrics for Neo-Clone.
+
+Features:
+- Real-time performance metrics display
+- Active traces visualization
+- Alert notifications in TUI
+- Resource usage monitoring
+- Interactive trace exploration
+"""
+
+import asyncio
+import time
+from typing import Dict, List, Optional, Any
+from datetime import datetime, timedelta
+from dataclasses import dataclass
+from textual.app import App, ComposeResult
+from textual.containers import Container, Horizontal, Vertical, ScrollableContainer
+from textual.widgets import (
+    Header, Footer, Static, DataTable, ProgressBar, 
+    Log, Button, Label, Tabs, TabPane, Collapsible
+)
+from textual.reactive import reactive
+from textual.binding import Binding
+from textual.timer import Timer
+from rich.text import Text
+from rich.table import Table
+from rich.panel import Panel
+import logging
+
+from .distributed_tracing import get_distributed_tracer, TraceOperationType
+from .metrics_collector import get_metrics_collector
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class DashboardState:
+    """State for the monitoring dashboard"""
+    last_update: datetime
+    active_traces: int = 0
+    total_requests: int = 0
+    error_rate: float = 0.0
+    avg_response_time: float = 0.0
+    cpu_usage: float = 0.0
+    memory_usage: float = 0.0
+    active_sessions: int = 0
+
+
+class MetricsPanel(Static):
+    """Panel for displaying key metrics"""
+    
+    def __init__(self, **kwargs):
+        super().__init__("", **kwargs)
+        self.metrics = {}
+    
+    def update_metrics(self, metrics_data: Dict[str, Any]) -> None:
+        """Update metrics display"""
+        self.metrics = metrics_data
+        self.update_display()
+    
+    def update_display(self) -> None:
+        """Update the display with current metrics"""
+        table = Table(title="Neo-Clone Performance Metrics", show_header=True, header_style="bold blue")
+        
+        table.add_column("Metric", style="cyan", width=20)
+        table.add_column("Value", style="green", width=15)
+        table.add_column("Status", style="yellow", width=10)
+        
+        # Add key metrics
+        if self.metrics:
+            # Brain Processing
+            brain_metrics = self.metrics.get("metrics", {}).get("brain_processing_duration", {})
+            if brain_metrics:
+                avg_time = brain_metrics.get("avg_value", 0)
+                status = "🟢 Good" if avg_time < 1000 else "🟡 Slow" if avg_time < 3000 else "🔴 Critical"
+                table.add_row("Avg Brain Time", f"{avg_time:.1f}ms", status)
+            
+            # Skill Execution
+            skill_metrics = self.metrics.get("metrics", {}).get("skill_execution_count", {})
+            if skill_metrics:
+                count = skill_metrics.get("data_points", 0)
+                table.add_row("Skill Executions", str(count), "🟢 Active")
+            
+            # Error Rate
+            error_metrics = self.metrics.get("metrics", {}).get("error_rate", {})
+            if error_metrics:
+                error_rate = error_metrics.get("latest_value", 0)
+                status = "🟢 Good" if error_rate < 5 else "🟡 Warning" if error_rate < 15 else "🔴 Critical"
+                table.add_row("Error Rate", f"{error_rate:.1f}%", status)
+            
+            # Active Sessions
+            session_metrics = self.metrics.get("metrics", {}).get("active_sessions", {})
+            if session_metrics:
+                sessions = session_metrics.get("latest_value", 0)
+                table.add_row("Active Sessions", str(sessions), "🟢 Active")
+            
+            # Cache Hit Rate
+            cache_metrics = self.metrics.get("metrics", {}).get("cache_hit_rate", {})
+            if cache_metrics:
+                hit_rate = cache_metrics.get("latest_value", 0)
+                status = "🟢 Good" if hit_rate > 80 else "🟡 Low" if hit_rate > 50 else "🔴 Poor"
+                table.add_row("Cache Hit Rate", f"{hit_rate:.1f}%", status)
+        
+        self.update(Panel(table, border_style="blue"))
+
+
+class ActiveTracesPanel(ScrollableContainer):
+    """Panel showing active traces"""
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.active_traces = []
+    
+    def update_traces(self, traces: List[Dict[str, Any]]) -> None:
+        """Update active traces display"""
+        self.active_traces = traces
+        self.update_display()
+    
+    def update_display(self) -> None:
+        """Update the traces display"""
+        self.remove_children()
+        
+        if not self.active_traces:
+            self.mount(Static("No active traces", style="dim"))
+            return
+        
+        for trace in self.active_traces[:10]:  # Show top 10
+            trace_info = Text()
+            trace_info.append(f"🔍 {trace.get('name', 'Unknown')}", style="bold cyan")
+            trace_info.append(f" - {trace.get('operation_type', 'unknown')}", style="yellow")
+            trace_info.append(f" ({trace.get('duration_ms', 0):.1f}ms)", style="green")
+            
+            self.mount(Static(trace_info))
+    
+    def compose(self) -> ComposeResult:
+        yield Static("Active Traces", style="bold blue")
+        yield Static("Loading...", style="dim")
+
+
+class AlertsPanel(ScrollableContainer):
+    """Panel for displaying alerts"""
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.alerts = []
+    
+    def update_alerts(self, alerts: List[Dict[str, Any]]) -> None:
+        """Update alerts display"""
+        self.alerts = alerts
+        self.update_display()
+    
+    def update_display(self) -> None:
+        """Update the alerts display"""
+        self.remove_children()
+        
+        if not self.alerts:
+            self.mount(Static("✅ No active alerts", style="green"))
+            return
+        
+        for alert in self.alerts[:5]:  # Show top 5
+            alert_text = Text()
+            
+            severity = alert.get('severity', 'warning')
+            if severity == 'critical':
+                alert_text.append("🔴 ", style="bold red")
+            elif severity == 'warning':
+                alert_text.append("🟡 ", style="bold yellow")
+            else:
+                alert_text.append("🔵 ", style="bold blue")
+            
+            alert_text.append(alert.get('name', 'Unknown'), style="bold")
+            alert_text.append(f": {alert.get('metric_name', 'unknown')}", style="cyan")
+            
+            self.mount(Static(alert_text))
+    
+    def compose(self) -> ComposeResult:
+        yield Static("Active Alerts", style="bold blue")
+        yield Static("Loading...", style="dim")
+
+
+class PerformanceChart(Static):
+    """Simple performance chart using text"""
+    
+    def __init__(self, **kwargs):
+        super().__init__("", **kwargs)
+        self.performance_data = []
+    
+    def update_performance(self, data_points: List[float]) -> None:
+        """Update performance chart"""
+        self.performance_data = data_points[-20:]  # Keep last 20 points
+        self.update_display()
+    
+    def update_display(self) -> None:
+        """Update the chart display"""
+        if not self.performance_data:
+            self.update("No performance data")
+            return
+        
+        # Create simple ASCII chart
+        max_val = max(self.performance_data) if self.performance_data else 1
+        min_val = min(self.performance_data) if self.performance_data else 0
+        range_val = max_val - min_val if max_val != min_val else 1
+        
+        chart_lines = []
+        for i, value in enumerate(self.performance_data):
+            # Normalize to 0-10 scale
+            normalized = int(((value - min_val) / range_val) * 10) if range_val > 0 else 5
+            bar = "█" * normalized + "░" * (10 - normalized)
+            chart_lines.append(f"{i:2d}: {bar} {value:.1f}")
+        
+        chart_text = "\n".join(chart_lines)
+        self.update(Panel(chart_text, title="Response Time (ms)", border_style="green"))
+
+
+class NeoCloneMonitoringDashboard(App):
+    """
+    Main monitoring dashboard for Neo-Clone Agent in OpenCode TUI
+    
+    Provides real-time monitoring and visualization of Neo-Clone performance,
+    distributed traces, and system metrics.
+    """
+    
+    CSS = """
+    .dashboard-container {
+        height: 100%;
+    }
+    
+    .metrics-panel {
+        width: 50%;
+        height: 30%;
+        border: solid $primary;
+    }
+    
+    .traces-panel {
+        width: 50%;
+        height: 30%;
+        border: solid $secondary;
+    }
+    
+    .alerts-panel {
+        width: 50%;
+        height: 20%;
+        border: solid $error;
+    }
+    
+    .chart-panel {
+        width: 50%;
+        height: 20%;
+        border: solid $success;
+    }
+    
+    .status-bar {
+        height: 3;
+        dock: top;
+        background: $surface;
+    }
+    
+    .refresh-button {
+        margin: 1;
+    }
+    """
+    
+    BINDINGS = [
+        Binding("q", "quit", "Quit"),
+        Binding("r", "refresh", "Refresh"),
+        Binding("c", "clear_alerts", "Clear Alerts"),
+        Binding("t", "toggle_auto_refresh", "Toggle Auto-Refresh"),
+        Binding("escape", "focus_next", "Focus Next"),
+    ]
+    
+    auto_refresh: reactive[bool] = reactive(True)
+    last_update: reactive[datetime] = reactive(datetime.now())
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.tracer = get_distributed_tracer()
+        self.metrics_collector = get_metrics_collector()
+        self.refresh_timer: Optional[Timer] = None
+        self.performance_history: List[float] = []
+    
+    def compose(self) -> ComposeResult:
+        """Compose the dashboard layout"""
+        yield Header()
+        
+        with Container(classes="dashboard-container"):
+            # Top row - Metrics and Traces
+            with Horizontal():
+                with Vertical(classes="metrics-panel"):
+                    yield MetricsPanel(id="metrics-panel")
+                with Vertical(classes="traces-panel"):
+                    yield ActiveTracesPanel(id="traces-panel")
+            
+            # Bottom row - Alerts and Chart
+            with Horizontal():
+                with Vertical(classes="alerts-panel"):
+                    yield AlertsPanel(id="alerts-panel")
+                with Vertical(classes="chart-panel"):
+                    yield PerformanceChart(id="chart-panel")
+            
+            # Status bar
+            with Horizontal(classes="status-bar"):
+                yield Label("Neo-Clone Monitoring Dashboard", id="status-label")
+                yield Button("Refresh", id="refresh-btn", classes="refresh-button")
+                yield Label(f"Last Update: {self.last_update.strftime('%H:%M:%S')}", id="update-time")
+        
+        yield Footer()
+    
+    def on_mount(self) -> None:
+        """Initialize dashboard when mounted"""
+        self.title = "Neo-Clone Agent Monitoring"
+        self.sub_title = "OpenCode TUI Integration"
+        
+        # Start auto-refresh
+        if self.auto_refresh:
+            self.refresh_timer = self.set_interval(2.0, self.refresh_data)
+        
+        # Initial data load
+        self.refresh_data()
+    
+    def refresh_data(self) -> None:
+        """Refresh all dashboard data"""
+        try:
+            # Update metrics
+            metrics_summary = self.metrics_collector.get_all_metrics_summary()
+            metrics_panel = self.query_one("#metrics-panel", MetricsPanel)
+            metrics_panel.update_metrics(metrics_summary)
+            
+            # Update active traces
+            active_operations = self.tracer.get_active_operations()
+            traces_panel = self.query_one("#traces-panel", ActiveTracesPanel)
+            traces_panel.update_traces(active_operations)
+            
+            # Update alerts
+            alerts_data = self._get_alerts_data()
+            alerts_panel = self.query_one("#alerts-panel", AlertsPanel)
+            alerts_panel.update_alerts(alerts_data)
+            
+            # Update performance chart
+            self._update_performance_chart()
+            
+            # Update status
+            self.last_update = datetime.now()
+            self.query_one("#update-time", Label).update(
+                f"Last Update: {self.last_update.strftime('%H:%M:%S')}"
+            )
+            
+        except Exception as e:
+            logger.error(f"Error refreshing dashboard data: {e}")
+    
+    def _get_alerts_data(self) -> List[Dict[str, Any]]:
+        """Get current alerts data"""
+        alerts = []
+        
+        # Get performance insights
+        insights = self.tracer.get_performance_insights()
+        
+        # Convert slow operations to alerts
+        for slow_op in insights.get("slow_operations", []):
+            alerts.append({
+                "name": f"Slow Operation: {slow_op['operation_type']}",
+                "metric_name": slow_op['operation_type'],
+                "severity": "warning" if slow_op['avg_duration_ms'] < 10000 else "critical",
+                "value": slow_op['avg_duration_ms']
+            })
+        
+        # Convert high error rate operations to alerts
+        for error_op in insights.get("high_error_rate_operations", []):
+            alerts.append({
+                "name": f"High Error Rate: {error_op['operation_type']}",
+                "metric_name": error_op['operation_type'],
+                "severity": "critical" if error_op['error_rate'] > 0.2 else "warning",
+                "value": error_op['error_rate'] * 100
+            })
+        
+        return alerts
+    
+    def _update_performance_chart(self) -> None:
+        """Update performance chart with recent data"""
+        try:
+            # Get recent brain processing durations
+            brain_metrics = self.metrics_collector.get_metric_data("brain_processing_duration")
+            if brain_metrics:
+                recent_values = [m.value for m in brain_metrics[-20:]]  # Last 20 values
+                self.performance_history.extend(recent_values)
+                self.performance_history = self.performance_history[-100:]  # Keep last 100
+                
+                chart_panel = self.query_one("#chart-panel", PerformanceChart)
+                chart_panel.update_performance(self.performance_history)
+        except Exception as e:
+            logger.error(f"Error updating performance chart: {e}")
+    
+    def action_refresh(self) -> None:
+        """Manual refresh action"""
+        self.refresh_data()
+        self.bell()  # Audio feedback
+    
+    def action_clear_alerts(self) -> None:
+        """Clear all alerts action"""
+        alerts_panel = self.query_one("#alerts-panel", AlertsPanel)
+        alerts_panel.update_alerts([])
+        self.notify("Alerts cleared", severity="information")
+    
+    def action_toggle_auto_refresh(self) -> None:
+        """Toggle auto-refresh"""
+        self.auto_refresh = not self.auto_refresh
+        
+        if self.auto_refresh:
+            self.refresh_timer = self.set_interval(2.0, self.refresh_data)
+            self.notify("Auto-refresh enabled", severity="information")
+        else:
+            if self.refresh_timer:
+                self.refresh_timer.stop()
+                self.refresh_timer = None
+            self.notify("Auto-refresh disabled", severity="warning")
+    
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button press events"""
+        if event.button.id == "refresh-btn":
+            self.action_refresh()
+
+
+class MonitoringIntegration:
+    """
+    Integration layer for monitoring with OpenCode TUI
+    
+    Provides methods to integrate monitoring capabilities into the main TUI
+    without disrupting the user experience.
+    """
+    
+    def __init__(self):
+        self.tracer = get_distributed_tracer()
+        self.metrics_collector = get_metrics_collector()
+        self.dashboard_app: Optional[NeoCloneMonitoringDashboard] = None
+    
+    def start_monitoring(self) -> None:
+        """Start monitoring systems"""
+        # Start background tasks
+        asyncio.create_task(self.tracer.start_background_tasks())
+        asyncio.create_task(self.metrics_collector.start_background_tasks())
+        
+        # Create default alerts
+        self._setup_default_alerts()
+        
+        logger.info("Neo-Clone monitoring started")
+    
+    def _setup_default_alerts(self) -> None:
+        """Setup default monitoring alerts"""
+        # High error rate alert
+        self.metrics_collector.create_alert(
+            name="high_error_rate",
+            metric_name="error_rate",
+            condition="gt",
+            threshold=10.0,  # 10%
+            severity="warning",
+            duration_seconds=60
+        )
+        
+        # Slow brain processing alert
+        self.metrics_collector.create_alert(
+            name="slow_brain_processing",
+            metric_name="brain_processing_duration",
+            condition="gt",
+            threshold=5000.0,  # 5 seconds
+            severity="warning",
+            duration_seconds=120
+        )
+        
+        # Low cache hit rate alert
+        self.metrics_collector.create_alert(
+            name="low_cache_hit_rate",
+            metric_name="cache_hit_rate",
+            condition="lt",
+            threshold=70.0,  # 70%
+            severity="warning",
+            duration_seconds=300
+        )
+    
+    def launch_dashboard(self) -> None:
+        """Launch the monitoring dashboard"""
+        if self.dashboard_app is None or not self.dashboard_app.is_running:
+            self.dashboard_app = NeoCloneMonitoringDashboard()
+            # Note: In actual OpenCode integration, this would be integrated
+            # into the main TUI rather than launched as separate app
+            logger.info("Monitoring dashboard launched")
+    
+    def get_quick_status(self) -> Dict[str, Any]:
+        """Get quick status for TUI integration"""
+        try:
+            metrics_summary = self.metrics_collector.get_all_metrics_summary()
+            insights = self.tracer.get_performance_insights()
+            
+            return {
+                "status": "healthy" if insights["overall_health"] == "good" else "warning",
+                "active_operations": len(self.tracer.get_active_operations()),
+                "total_metrics": metrics_summary["total_metrics"],
+                "active_alerts": metrics_summary["active_alerts"],
+                "error_rate": self._get_current_error_rate(),
+                "avg_response_time": self._get_current_response_time()
+            }
+        except Exception as e:
+            logger.error(f"Error getting quick status: {e}")
+            return {
+                "status": "error",
+                "error": str(e)
+            }
+    
+    def _get_current_error_rate(self) -> float:
+        """Get current error rate"""
+        try:
+            error_metrics = self.metrics_collector.get_metric_data("error_rate")
+            if error_metrics:
+                return error_metrics[-1].value
+        except:
+            pass
+        return 0.0
+    
+    def _get_current_response_time(self) -> float:
+        """Get current response time"""
+        try:
+            brain_metrics = self.metrics_collector.get_metric_data("brain_processing_duration")
+            if brain_metrics:
+                return brain_metrics[-1].value
+        except:
+            pass
+        return 0.0
+    
+    def shutdown(self) -> None:
+        """Shutdown monitoring systems"""
+        if self.dashboard_app and self.dashboard_app.is_running:
+            self.dashboard_app.exit()
+        
+        self.tracer.shutdown()
+        self.metrics_collector.shutdown()
+        
+        logger.info("Neo-Clone monitoring shutdown")
+
+
+# Global monitoring integration instance
+_monitoring_integration: Optional[MonitoringIntegration] = None
+
+
+def get_monitoring_integration() -> MonitoringIntegration:
+    """Get global monitoring integration instance"""
+    global _monitoring_integration
+    
+    if _monitoring_integration is None:
+        _monitoring_integration = MonitoringIntegration()
+    
+    return _monitoring_integration
+
+
+# Convenience functions for TUI integration
+def start_neo_clone_monitoring() -> None:
+    """Start Neo-Clone monitoring for OpenCode TUI"""
+    integration = get_monitoring_integration()
+    integration.start_monitoring()
+
+
+def get_monitoring_status() -> Dict[str, Any]:
+    """Get monitoring status for TUI display"""
+    integration = get_monitoring_integration()
+    return integration.get_quick_status()
+
+
+def launch_monitoring_dashboard() -> None:
+    """Launch monitoring dashboard"""
+    integration = get_monitoring_integration()
+    integration.launch_dashboard()

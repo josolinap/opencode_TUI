@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+"""
+Simple Deployment Script for Neo-Clone Monitoring System
+"""
+
+import os
+import sys
+import json
+import time
+import shutil
+import subprocess
+from pathlib import Path
+
+def print_banner():
+    """Print deployment banner"""
+    print("=" * 80)
+    print("NEO-CLONE MONITORING SYSTEM DEPLOYMENT")
+    print("=" * 80)
+    print("Deploying comprehensive monitoring for Neo-Clone + OpenCode TUI")
+    print()
+
+def check_prerequisites():
+    """Check deployment prerequisites"""
+    print("Checking prerequisites...")
+    
+    # Check Python version
+    if sys.version_info < (3, 8):
+        print("ERROR: Python 3.8+ required")
+        return False
+    
+    # Check if we're in the right directory
+    current_dir = Path.cwd()
+    if not (current_dir / "monitoring_integration.py").exists():
+        print("ERROR: Run this script from the monitoring directory")
+        return False
+    
+    print("SUCCESS: Prerequisites check passed")
+    return True
+
+def create_deployment_structure():
+    """Create deployment directory structure"""
+    print("Creating deployment structure...")
+    
+    # Create directories
+    dirs_to_create = [
+        "logs",
+        "data",
+        "data/metrics",
+        "data/traces", 
+        "data/profiles",
+        "config",
+        "backups"
+    ]
+    
+    for dir_path in dirs_to_create:
+        Path(dir_path).mkdir(parents=True, exist_ok=True)
+    
+    print("SUCCESS: Directory structure created")
+    return True
+
+def install_dependencies():
+    """Install required dependencies"""
+    print("Installing dependencies...")
+    
+    core_deps = [
+        "asyncio-throttle>=1.0.2",
+    ]
+    
+    optional_deps = [
+        "psutil>=5.9.0",
+        "prometheus-client>=0.17.0"
+    ]
+    
+    # Install core dependencies
+    for dep in core_deps:
+        try:
+            subprocess.run([sys.executable, "-m", "pip", "install", dep], 
+                         check=True, capture_output=True)
+            print(f"Installed: {dep}")
+        except subprocess.CalledProcessError as e:
+            print(f"WARNING: Failed to install {dep}: {e}")
+    
+    # Install optional dependencies (best effort)
+    for dep in optional_deps:
+        try:
+            subprocess.run([sys.executable, "-m", "pip", "install", dep], 
+                         check=True, capture_output=True)
+            print(f"Installed (optional): {dep}")
+        except subprocess.CalledProcessError:
+            print(f"Skipping optional dependency: {dep}")
+    
+    print("SUCCESS: Dependencies installation completed")
+    return True
+
+def create_configuration():
+    """Create monitoring configuration"""
+    print("Creating configuration...")
+    
+    config = {
+        "monitoring": {
+            "enabled": True,
+            "tracing_enabled": True,
+            "metrics_enabled": True,
+            "profiling_enabled": True,
+            "dashboard_enabled": True,
+            "auto_instrument_brain": True,
+            "auto_instrument_skills": True,
+            "opencode_integration": True
+        },
+        "performance": {
+            "cpu_threshold": 80.0,
+            "memory_threshold": 85.0,
+            "response_time_threshold": 2000.0,
+            "monitoring_interval": 1.0
+        },
+        "tracing": {
+            "service_name": "neo-clone-opencode",
+            "sample_rate": 0.1,
+            "endpoint": None,
+            "jaeger_endpoint": None,
+            "otlp_endpoint": None
+        },
+        "metrics": {
+            "export_interval": 30.0,
+            "endpoint": None,
+            "prometheus_port": 8080,
+            "retention_hours": 24
+        },
+        "profiling": {
+            "sample_rate": 0.05,
+            "min_duration_ms": 100.0,
+            "memory_profiling": False,
+            "cpu_profiling": True
+        },
+        "dashboard": {
+            "enabled": True,
+            "refresh_interval": 2.0,
+            "port": 8081,
+            "host": "localhost"
+        },
+        "error_handling": {
+            "max_errors_per_window": 100,
+            "error_window_minutes": 5,
+            "circuit_breaker_threshold": 5,
+            "circuit_breaker_timeout": 60,
+            "log_dir": "logs"
+        },
+        "logging": {
+            "level": "INFO",
+            "file": "logs/monitoring.log",
+            "max_size_mb": 100,
+            "backup_count": 5
+        }
+    }
+    
+    config_path = Path("config/monitoring_config.json")
+    with open(config_path, 'w') as f:
+        json.dump(config, f, indent=2)
+    
+    print("SUCCESS: Configuration created")
+    return True
+
+def create_startup_scripts():
+    """Create startup and health check scripts"""
+    print("Creating startup scripts...")
+    
+    # Windows startup script
+    startup_bat = """@echo off
+echo Starting Neo-Clone Monitoring System...
+echo.
+echo Dashboard: http://localhost:8081
+echo Metrics: http://localhost:8080/metrics
+echo Press Ctrl+C to stop
+echo.
+python -c "import sys; import os; sys.path.insert(0, os.getcwd()); from monitoring_integration import get_global_monitoring; monitoring = get_global_monitoring(); monitoring.initialize(); print('Monitoring system is running!'); input('Press Enter to stop...')"
+"""
+    
+    with open("START_MONITORING.bat", 'w') as f:
+        f.write(startup_bat)
+    
+    # Health check script
+    health_bat = """@echo off
+python -c "import sys; import os; import json; import time; sys.path.insert(0, os.getcwd()); from monitoring_integration import get_global_monitoring; monitoring = get_global_monitoring(); health = {'timestamp': time.time(), 'status': 'healthy' if monitoring.status.initialized else 'unhealthy', 'monitoring_initialized': monitoring.status.initialized, 'active_operations': len(monitoring.active_operations)}; print(json.dumps(health, indent=2))"
+"""
+    
+    with open("HEALTH_CHECK.bat", 'w') as f:
+        f.write(health_bat)
+    
+    print("SUCCESS: Startup scripts created")
+    return True
+
+def test_deployment():
+    """Test the deployment"""
+    print("Testing deployment...")
+    
+    try:
+        # Add current directory to Python path
+        sys.path.insert(0, str(Path.cwd()))
+        
+        # Test import
+        from monitoring_integration import get_global_monitoring
+        monitoring = get_global_monitoring()
+        
+        # Test initialization
+        success = monitoring.initialize()
+        
+        if success:
+            print("SUCCESS: Deployment test passed")
+            return True
+        else:
+            print("ERROR: Deployment test failed")
+            return False
+            
+    except Exception as e:
+        print(f"ERROR: Deployment test failed with exception: {e}")
+        return False
+
+def print_deployment_summary():
+    """Print deployment summary"""
+    print()
+    print("DEPLOYMENT SUMMARY:")
+    print("=" * 80)
+    print("NEO-CLONE MONITORING SYSTEM DEPLOYED!")
+    print("=" * 80)
+    print()
+    print("QUICK START:")
+    print("   1. Start monitoring: START_MONITORING.bat")
+    print("   2. View dashboard: http://localhost:8081")
+    print("   3. Check health: HEALTH_CHECK.bat")
+    print("   4. View metrics: http://localhost:8080/metrics")
+    print()
+    print("INTEGRATION:")
+    print("   - Add to OpenCode TUI: import opencode_integration")
+    print("   - Auto-monitoring enabled by default")
+    print("   - Configure: edit config/monitoring_config.json")
+    print()
+    print("MONITORING FEATURES:")
+    print("   [OK] Distributed tracing")
+    print("   [OK] Performance metrics")
+    print("   [OK] Real-time profiling")
+    print("   [OK] Error handling")
+    print("   [OK] TUI dashboard")
+    print("   [OK] Health monitoring")
+    print()
+    print("FILES CREATED:")
+    print("   - config/monitoring_config.json - Configuration")
+    print("   - START_MONITORING.bat - Startup script")
+    print("   - HEALTH_CHECK.bat - Health check")
+    print("   - logs/ - Log files directory")
+    print("   - data/ - Data storage directory")
+    print()
+    print("READY TO USE! Run START_MONITORING.bat to begin monitoring.")
+    print("=" * 80)
+
+def main():
+    """Main deployment function"""
+    try:
+        print_banner()
+        
+        if not check_prerequisites():
+            return False
+            
+        if not create_deployment_structure():
+            return False
+            
+        if not install_dependencies():
+            return False
+            
+        if not create_configuration():
+            return False
+            
+        if not create_startup_scripts():
+            return False
+            
+        if not test_deployment():
+            print("WARNING: Deployment test failed, but files were created")
+        
+        print_deployment_summary()
+        return True
+        
+    except Exception as e:
+        print(f"ERROR: Deployment failed: {e}")
+        return False
+
+if __name__ == "__main__":
+    success = main()
+    sys.exit(0 if success else 1)

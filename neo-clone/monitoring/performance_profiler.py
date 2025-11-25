@@ -1,0 +1,757 @@
+"""
+Performance Profiler and Bottleneck Detection for Neo-Clone Monitoring
+
+This module provides advanced performance analysis capabilities including:
+- CPU and memory profiling
+- Bottleneck detection algorithms
+- Performance trend analysis
+- Optimization recommendations
+- Detailed profiling reports
+"""
+
+import asyncio
+import time
+import threading
+import psutil
+import gc
+import traceback
+from typing import Dict, List, Any, Optional, Tuple, Callable
+from dataclasses import dataclass, field
+from collections import defaultdict, deque
+import json
+import statistics
+from datetime import datetime, timedelta
+import cProfile
+import pstats
+import io
+from concurrent.futures import ThreadPoolExecutor
+import weakref
+import inspect
+
+# Try to import advanced profiling libraries
+try:
+    import memory_profiler
+    MEMORY_PROFILER_AVAILABLE = True
+except ImportError:
+    MEMORY_PROFILER_AVAILABLE = False
+
+try:
+    import pyinstrument
+    PYINSTRUMENT_AVAILABLE = True
+except ImportError:
+    PYINSTRUMENT_AVAILABLE = False
+
+
+@dataclass
+class PerformanceSnapshot:
+    """Snapshot of system performance at a point in time"""
+    timestamp: datetime
+    cpu_percent: float
+    memory_usage_mb: float
+    memory_percent: float
+    active_threads: int
+    gc_objects: int
+    response_time_ms: Optional[float] = None
+    operation_type: Optional[str] = None
+    operation_id: Optional[str] = None
+
+
+@dataclass
+class BottleneckReport:
+    """Report of detected performance bottlenecks"""
+    timestamp: datetime
+    severity: str  # 'low', 'medium', 'high', 'critical'
+    category: str  # 'cpu', 'memory', 'io', 'network', 'algorithm'
+    description: str
+    affected_operations: List[str]
+    metrics: Dict[str, Any]
+    recommendations: List[str]
+    confidence_score: float  # 0.0 to 1.0
+
+
+@dataclass
+class PerformanceProfile:
+    """Detailed performance profile for an operation"""
+    operation_id: str
+    operation_type: str
+    start_time: datetime
+    end_time: datetime
+    duration_ms: float
+    cpu_samples: List[float]
+    memory_samples: List[float]
+    function_calls: Dict[str, int]
+    slow_functions: List[Tuple[str, float]]  # (function_name, time_ms)
+    memory_leaks: List[str]
+    thread_contention: bool
+    io_wait_time: float
+    recommendations: List[str]
+
+
+class PerformanceProfiler:
+    """Advanced performance profiling and bottleneck detection"""
+    
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        self.config = config or {}
+        self.monitoring_enabled = True
+        self.profiler_enabled = True
+        
+        # Performance data storage
+        self.performance_history: deque = deque(maxlen=10000)
+        self.operation_profiles: Dict[str, PerformanceProfile] = {}
+        self.bottleneck_reports: List[BottleneckReport] = []
+        
+        # Real-time monitoring
+        self.monitoring_thread = None
+        self.monitoring_interval = self.config.get('monitoring_interval', 1.0)
+        self.stop_monitoring = threading.Event()
+        
+        # Profiling tools
+        self.profilers: Dict[str, Any] = {}
+        self.memory_profiler = None
+        self.pyinstrument_profiler = None
+        
+        # Bottleneck detection thresholds
+        self.thresholds = {
+            'cpu_high': self.config.get('cpu_high_threshold', 80.0),
+            'cpu_critical': self.config.get('cpu_critical_threshold', 95.0),
+            'memory_high': self.config.get('memory_high_threshold', 80.0),
+            'memory_critical': self.config.get('memory_critical_threshold', 95.0),
+            'response_time_slow': self.config.get('response_time_slow_threshold', 1000.0),
+            'response_time_critical': self.config.get('response_time_critical_threshold', 5000.0),
+            'gc_objects_high': self.config.get('gc_objects_high_threshold', 100000),
+        }
+        
+        # Performance baselines
+        self.baselines = {
+            'avg_cpu': 0.0,
+            'avg_memory': 0.0,
+            'avg_response_time': 0.0,
+            'baseline_established': False
+        }
+        
+        # Initialize profiling tools
+        self._initialize_profilers()
+        
+        # Start monitoring thread
+        self._start_monitoring()
+    
+    def _initialize_profilers(self):
+        """Initialize available profiling tools"""
+        try:
+            if PYINSTRUMENT_AVAILABLE:
+                self.pyinstrument_profiler = pyinstrument.Profiler()
+                print("[PerformanceProfiler] PyInstrument profiler initialized")
+        except Exception as e:
+            print(f"[PerformanceProfiler] Failed to initialize PyInstrument: {e}")
+        
+        try:
+            if MEMORY_PROFILER_AVAILABLE:
+                # Memory profiler setup
+                self.memory_profiler = memory_profiler.LineProfiler()
+                print("[PerformanceProfiler] Memory profiler initialized")
+        except Exception as e:
+            print(f"[PerformanceProfiler] Failed to initialize memory profiler: {e}")
+    
+    def _start_monitoring(self):
+        """Start background performance monitoring"""
+        if self.monitoring_thread is None or not self.monitoring_thread.is_alive():
+            self.stop_monitoring.clear()
+            self.monitoring_thread = threading.Thread(
+                target=self._monitoring_loop,
+                daemon=True,
+                name="PerformanceMonitor"
+            )
+            self.monitoring_thread.start()
+            print("[PerformanceProfiler] Performance monitoring started")
+    
+    def _monitoring_loop(self):
+        """Background monitoring loop"""
+        while not self.stop_monitoring.wait(self.monitoring_interval):
+            try:
+                snapshot = self._collect_performance_snapshot()
+                self.performance_history.append(snapshot)
+                
+                # Check for immediate bottlenecks
+                self._check_immediate_bottlenecks(snapshot)
+                
+                # Update baselines periodically
+                if len(self.performance_history) % 100 == 0:
+                    self._update_baselines()
+                    
+            except Exception as e:
+                print(f"[PerformanceProfiler] Monitoring error: {e}")
+    
+    def _collect_performance_snapshot(self) -> PerformanceSnapshot:
+        """Collect current system performance snapshot"""
+        try:
+            # CPU and memory metrics with null safety
+            cpu_percent = psutil.cpu_percent(interval=0.1)
+            memory = psutil.virtual_memory()
+            
+            # Null safety checks
+            if memory is None:
+                memory_used_mb = 0.0
+                memory_percent = 0.0
+            else:
+                memory_used_mb = memory.used / (1024 * 1024) if memory.used else 0.0
+                memory_percent = memory.percent if memory.percent else 0.0
+            
+            # Thread and GC metrics
+            active_threads = threading.active_count()
+            gc_objects = len(gc.get_objects()) if hasattr(gc, 'get_objects') else 0
+            
+            return PerformanceSnapshot(
+                timestamp=datetime.now(),
+                cpu_percent=cpu_percent if cpu_percent is not None else 0.0,
+                memory_usage_mb=memory_used_mb,
+                memory_percent=memory_percent,
+                active_threads=active_threads,
+                gc_objects=gc_objects
+            )
+        except Exception as e:
+            logger.warning(f"Error collecting performance snapshot: {e}")
+            return PerformanceSnapshot(
+                timestamp=datetime.now(),
+                cpu_percent=0.0,
+                memory_usage_mb=0.0,
+                memory_percent=0.0,
+                active_threads=0,
+                gc_objects=0
+            )
+    
+    def _check_immediate_bottlenecks(self, snapshot: PerformanceSnapshot):
+        """Check for immediate performance bottlenecks"""
+        bottlenecks = []
+        
+        # CPU bottlenecks
+        if snapshot.cpu_percent > self.thresholds['cpu_critical']:
+            bottlenecks.append(BottleneckReport(
+                timestamp=snapshot.timestamp,
+                severity='critical',
+                category='cpu',
+                description=f"Critical CPU usage: {snapshot.cpu_percent:.1f}%",
+                affected_operations=['all'],
+                metrics={'cpu_percent': snapshot.cpu_percent},
+                recommendations=[
+                    "Check for infinite loops or CPU-intensive operations",
+                    "Consider implementing rate limiting",
+                    "Scale horizontally if possible"
+                ],
+                confidence_score=0.9
+            ))
+        elif snapshot.cpu_percent > self.thresholds['cpu_high']:
+            bottlenecks.append(BottleneckReport(
+                timestamp=snapshot.timestamp,
+                severity='high',
+                category='cpu',
+                description=f"High CPU usage: {snapshot.cpu_percent:.1f}%",
+                affected_operations=['all'],
+                metrics={'cpu_percent': snapshot.cpu_percent},
+                recommendations=[
+                    "Monitor for sustained high CPU",
+                    "Check for inefficient algorithms",
+                    "Consider caching frequently computed results"
+                ],
+                confidence_score=0.7
+            ))
+        
+        # Memory bottlenecks
+        if snapshot.memory_percent > self.thresholds['memory_critical']:
+            bottlenecks.append(BottleneckReport(
+                timestamp=snapshot.timestamp,
+                severity='critical',
+                category='memory',
+                description=f"Critical memory usage: {snapshot.memory_percent:.1f}%",
+                affected_operations=['all'],
+                metrics={'memory_percent': snapshot.memory_percent, 'memory_mb': snapshot.memory_usage_mb},
+                recommendations=[
+                    "Immediate memory cleanup required",
+                    "Check for memory leaks",
+                    "Consider increasing available memory"
+                ],
+                confidence_score=0.9
+            ))
+        elif snapshot.memory_percent > self.thresholds['memory_high']:
+            bottlenecks.append(BottleneckReport(
+                timestamp=snapshot.timestamp,
+                severity='high',
+                category='memory',
+                description=f"High memory usage: {snapshot.memory_percent:.1f}%",
+                affected_operations=['all'],
+                metrics={'memory_percent': snapshot.memory_percent, 'memory_mb': snapshot.memory_usage_mb},
+                recommendations=[
+                    "Monitor memory growth trends",
+                    "Check for large object retention",
+                    "Implement memory pooling if applicable"
+                ],
+                confidence_score=0.7
+            ))
+        
+        # GC objects bottleneck
+        if snapshot.gc_objects > self.thresholds['gc_objects_high']:
+            bottlenecks.append(BottleneckReport(
+                timestamp=snapshot.timestamp,
+                severity='medium',
+                category='memory',
+                description=f"High object count: {snapshot.gc_objects:,} objects",
+                affected_operations=['all'],
+                metrics={'gc_objects': snapshot.gc_objects},
+                recommendations=[
+                    "Consider manual garbage collection",
+                    "Check for object retention patterns",
+                    "Implement object pooling for frequently created objects"
+                ],
+                confidence_score=0.6
+            ))
+        
+        # Store bottlenecks
+        self.bottleneck_reports.extend(bottlenecks)
+        
+        # Keep only recent bottlenecks
+        if len(self.bottleneck_reports) > 1000:
+            self.bottleneck_reports = self.bottleneck_reports[-1000:]
+    
+    def _update_baselines(self):
+        """Update performance baselines from recent history"""
+        if len(self.performance_history) < 50:
+            return
+        
+        recent_snapshots = list(self.performance_history)[-50:]
+        
+        self.baselines['avg_cpu'] = statistics.mean([s.cpu_percent for s in recent_snapshots])
+        self.baselines['avg_memory'] = statistics.mean([s.memory_percent for s in recent_snapshots])
+        
+        response_times = [s.response_time_ms for s in recent_snapshots if s.response_time_ms]
+        if response_times:
+            self.baselines['avg_response_time'] = statistics.mean(response_times)
+        
+        self.baselines['baseline_established'] = True
+        print("[PerformanceProfiler] Performance baselines updated")
+    
+    def start_operation_profiling(self, operation_id: str, operation_type: str) -> str:
+        """Start profiling a specific operation"""
+        if not self.profiler_enabled:
+            return operation_id
+        
+        profile_id = f"{operation_type}_{operation_id}_{int(time.time())}"
+        
+        # Create cProfile for CPU profiling
+        cpu_profiler = cProfile.Profile()
+        cpu_profiler.enable()
+        
+        # Store profiler reference
+        self.profilers[profile_id] = {
+            'cpu_profiler': cpu_profiler,
+            'start_time': datetime.now(),
+            'operation_type': operation_type,
+            'operation_id': operation_id,
+            'memory_start': psutil.virtual_memory().used,
+            'cpu_samples': [],
+            'memory_samples': []
+        }
+        
+        # Start PyInstrument if available
+        if PYINSTRUMENT_AVAILABLE and self.pyinstrument_profiler:
+            self.pyinstrument_profiler.start()
+        
+        return profile_id
+    
+    def stop_operation_profiling(self, profile_id: str) -> Optional[PerformanceProfile]:
+        """Stop profiling and generate performance profile"""
+        if profile_id not in self.profilers:
+            return None
+        
+        profiler_data = self.profilers[profile_id]
+        end_time = datetime.now()
+        
+        # Stop CPU profiling
+        cpu_profiler = profiler_data['cpu_profiler']
+        cpu_profiler.disable()
+        
+        # Get profiling statistics
+        stats_stream = io.StringIO()
+        ps = pstats.Stats(cpu_profiler, stream=stats_stream)
+        ps.sort_stats('cumulative')
+        ps.print_stats(20)  # Top 20 functions
+        
+        # Parse slow functions
+        slow_functions = self._parse_slow_functions(stats_stream.getvalue())
+        
+        # Stop PyInstrument if available
+        pyinstrument_output = None
+        if PYINSTRUMENT_AVAILABLE and self.pyinstrument_profiler:
+            pyinstrument_output = self.pyinstrument_profiler.stop()
+        
+        # Calculate duration
+        duration_ms = (end_time - profiler_data['start_time']).total_seconds() * 1000
+        
+        # Memory analysis
+        memory_end = psutil.virtual_memory().used
+        memory_delta = memory_end - profiler_data['memory_start']
+        
+        # Create performance profile
+        profile = PerformanceProfile(
+            operation_id=profiler_data['operation_id'],
+            operation_type=profiler_data['operation_type'],
+            start_time=profiler_data['start_time'],
+            end_time=end_time,
+            duration_ms=duration_ms,
+            cpu_samples=profiler_data['cpu_samples'],
+            memory_samples=profiler_data['memory_samples'],
+            function_calls={},  # Could be extracted from cProfile if needed
+            slow_functions=slow_functions,
+            memory_leaks=self._detect_memory_leaks(profiler_data),
+            thread_contention=self._detect_thread_contention(),
+            io_wait_time=self._estimate_io_wait_time(profiler_data),
+            recommendations=self._generate_recommendations(profiler_data, duration_ms)
+        )
+        
+        # Store profile
+        self.operation_profiles[profile_id] = profile
+        
+        # Clean up profiler
+        del self.profilers[profile_id]
+        
+        return profile
+    
+    def _parse_slow_functions(self, stats_output: str) -> List[Tuple[str, float]]:
+        """Parse slow functions from cProfile output"""
+        slow_functions = []
+        
+        if not stats_output or not isinstance(stats_output, str):
+            return slow_functions
+            
+        lines = stats_output.split('\n')
+        
+        for line in lines[5:]:  # Skip header lines
+            if line.strip() and not line.startswith(' '):
+                parts = line.split()
+                if len(parts) >= 6:
+                    try:
+                        time_per_call = float(parts[3]) * 1000  # Convert to ms
+                        function_name = ' '.join(parts[5:])
+                        if time_per_call > 10:  # Only include functions > 10ms
+                            slow_functions.append((function_name, time_per_call))
+                    except (ValueError, IndexError, TypeError) as e:
+                        logger.debug(f"Error parsing function line '{line}': {e}")
+                        continue
+        
+        return slow_functions[:10]  # Return top 10 slow functions
+    
+    def _detect_memory_leaks(self, profiler_data: Dict[str, Any]) -> List[str]:
+        """Detect potential memory leaks"""
+        leaks = []
+        
+        try:
+            memory_samples = profiler_data.get('memory_samples', [])
+            if not memory_samples or len(memory_samples) < 2:
+                return leaks
+                
+            start_memory = memory_samples[0]
+            end_memory = memory_samples[-1]
+            
+            # Null safety checks
+            if start_memory is None or end_memory is None:
+                return leaks
+                
+            if start_memory <= 0:  # Avoid division by zero
+                return leaks
+            
+            if end_memory > start_memory * 1.5:  # 50% growth
+                growth_percent = ((end_memory/start_memory - 1) * 100)
+                leaks.append(f"Memory grew by {growth_percent:.1f}% during operation")
+                
+        except Exception as e:
+            logger.warning(f"Error detecting memory leaks: {e}")
+        
+        return leaks
+    
+    def _detect_thread_contention(self) -> bool:
+        """Detect potential thread contention"""
+        try:
+            # Simple heuristic: high number of active threads
+            active_threads = threading.active_count()
+            cpu_count = psutil.cpu_count()
+            
+            # Null safety check
+            if cpu_count is None or cpu_count <= 0:
+                cpu_count = 1  # Default to 1 core if detection fails
+            
+            return active_threads > cpu_count * 4  # More than 4x CPU cores
+        except Exception as e:
+            logger.warning(f"Error detecting thread contention: {e}")
+            return False
+    
+    def _estimate_io_wait_time(self, profiler_data: Dict[str, Any]) -> float:
+        """Estimate IO wait time during operation"""
+        # This is a simplified estimation
+        # In a real implementation, you'd use more sophisticated methods
+        return 0.0
+    
+    def _generate_recommendations(self, profiler_data: Dict[str, Any], duration_ms: float) -> List[str]:
+        """Generate performance optimization recommendations"""
+        recommendations = []
+        
+        # Duration-based recommendations
+        if duration_ms > 5000:  # > 5 seconds
+            recommendations.append("Consider breaking this operation into smaller chunks")
+            recommendations.append("Implement asynchronous processing if possible")
+        
+        if duration_ms > 1000:  # > 1 second
+            recommendations.append("Add progress indicators for long-running operations")
+            recommendations.append("Consider caching results if operation is repeatable")
+        
+        # Memory-based recommendations
+        if profiler_data['memory_samples']:
+            avg_memory = statistics.mean(profiler_data['memory_samples'])
+            if avg_memory > 1000:  # > 1GB
+                recommendations.append("Consider memory optimization techniques")
+                recommendations.append("Implement streaming for large data processing")
+        
+        return recommendations
+    
+    def analyze_performance_trends(self, time_window_minutes: int = 60) -> Dict[str, Any]:
+        """Analyze performance trends over time window"""
+        cutoff_time = datetime.now() - timedelta(minutes=time_window_minutes)
+        recent_snapshots = [
+            s for s in self.performance_history 
+            if s.timestamp >= cutoff_time
+        ]
+        
+        if not recent_snapshots:
+            return {"error": "No data available for analysis"}
+        
+        # Calculate trends
+        cpu_values = [s.cpu_percent for s in recent_snapshots]
+        memory_values = [s.memory_percent for s in recent_snapshots]
+        
+        analysis = {
+            'time_window_minutes': time_window_minutes,
+            'sample_count': len(recent_snapshots),
+            'cpu': {
+                'current': cpu_values[-1] if cpu_values else 0,
+                'average': statistics.mean(cpu_values) if cpu_values else 0,
+                'max': max(cpu_values) if cpu_values else 0,
+                'trend': self._calculate_trend(cpu_values)
+            },
+            'memory': {
+                'current': memory_values[-1] if memory_values else 0,
+                'average': statistics.mean(memory_values) if memory_values else 0,
+                'max': max(memory_values) if memory_values else 0,
+                'trend': self._calculate_trend(memory_values)
+            },
+            'bottlenecks': len([
+                b for b in self.bottleneck_reports 
+                if b.timestamp >= cutoff_time
+            ]),
+            'recommendations': self._generate_trend_recommendations(cpu_values, memory_values)
+        }
+        
+        return analysis
+    
+    def _calculate_trend(self, values: List[float]) -> str:
+        """Calculate trend direction from values"""
+        if len(values) < 2:
+            return 'stable'
+        
+        # Simple linear regression to determine trend
+        n = len(values)
+        x = list(range(n))
+        
+        x_mean = statistics.mean(x)
+        y_mean = statistics.mean(values)
+        
+        numerator = sum((x[i] - x_mean) * (values[i] - y_mean) for i in range(n))
+        denominator = sum((x[i] - x_mean) ** 2 for i in range(n))
+        
+        if denominator == 0:
+            return 'stable'
+        
+        slope = numerator / denominator
+        
+        if slope > 0.5:
+            return 'increasing'
+        elif slope < -0.5:
+            return 'decreasing'
+        else:
+            return 'stable'
+    
+    def _generate_trend_recommendations(self, cpu_values: List[float], memory_values: List[float]) -> List[str]:
+        """Generate recommendations based on trends"""
+        recommendations = []
+        
+        if cpu_values:
+            cpu_trend = self._calculate_trend(cpu_values)
+            if cpu_trend == 'increasing':
+                recommendations.append("CPU usage is trending upward - investigate potential causes")
+            elif cpu_trend == 'decreasing':
+                recommendations.append("CPU usage is improving - continue current optimization efforts")
+        
+        if memory_values:
+            memory_trend = self._calculate_trend(memory_values)
+            if memory_trend == 'increasing':
+                recommendations.append("Memory usage is trending upward - check for memory leaks")
+            elif memory_trend == 'decreasing':
+                recommendations.append("Memory usage is improving - good memory management")
+        
+        return recommendations
+    
+    def get_bottleneck_summary(self, hours: int = 24) -> Dict[str, Any]:
+        """Get summary of bottlenecks in the specified time period"""
+        cutoff_time = datetime.now() - timedelta(hours=hours)
+        recent_bottlenecks = [
+            b for b in self.bottleneck_reports 
+            if b.timestamp >= cutoff_time
+        ]
+        
+        if not recent_bottlenecks:
+            return {"message": "No bottlenecks detected in the specified period"}
+        
+        # Group by severity
+        by_severity = defaultdict(list)
+        by_category = defaultdict(list)
+        
+        for bottleneck in recent_bottlenecks:
+            by_severity[bottleneck.severity].append(bottleneck)
+            by_category[bottleneck.category].append(bottleneck)
+        
+        summary = {
+            'time_period_hours': hours,
+            'total_bottlenecks': len(recent_bottlenecks),
+            'by_severity': {
+                severity: len(bottlenecks) 
+                for severity, bottlenecks in by_severity.items()
+            },
+            'by_category': {
+                category: len(bottlenecks) 
+                for category, bottlenecks in by_category.items()
+            },
+            'top_issues': sorted(
+                recent_bottlenecks,
+                key=lambda x: (x.severity, x.confidence_score),
+                reverse=True
+            )[:5],
+            'recommendations': self._generate_bottleneck_recommendations(recent_bottlenecks)
+        }
+        
+        return summary
+    
+    def _generate_bottleneck_recommendations(self, bottlenecks: List[BottleneckReport]) -> List[str]:
+        """Generate recommendations based on bottleneck patterns"""
+        recommendations = []
+        
+        # Count by category
+        category_counts = defaultdict(int)
+        for b in bottlenecks:
+            category_counts[b.category] += 1
+        
+        # Category-specific recommendations
+        if category_counts['cpu'] > 3:
+            recommendations.append("Frequent CPU bottlenecks detected - consider scaling or optimization")
+        
+        if category_counts['memory'] > 3:
+            recommendations.append("Memory issues are recurring - implement memory monitoring and cleanup")
+        
+        if category_counts['io'] > 2:
+            recommendations.append("IO bottlenecks detected - consider caching or async operations")
+        
+        # Severity-based recommendations
+        critical_count = sum(1 for b in bottlenecks if b.severity == 'critical')
+        if critical_count > 0:
+            recommendations.append(f"{critical_count} critical bottlenecks found - immediate attention required")
+        
+        return recommendations
+    
+    def export_performance_report(self, format: str = 'json') -> str:
+        """Export comprehensive performance report"""
+        report = {
+            'generated_at': datetime.now().isoformat(),
+            'performance_summary': self.analyze_performance_trends(),
+            'bottleneck_summary': self.get_bottleneck_summary(),
+            'recent_profiles': {
+                profile_id: {
+                    'operation_id': profile.operation_id,
+                    'operation_type': profile.operation_type,
+                    'duration_ms': profile.duration_ms,
+                    'slow_functions': profile.slow_functions[:5],
+                    'recommendations': profile.recommendations
+                }
+                for profile_id, profile in list(self.operation_profiles.items())[-10:]
+            },
+            'system_info': {
+                'cpu_count': psutil.cpu_count(),
+                'memory_total_gb': psutil.virtual_memory().total / (1024**3),
+                'active_threads': threading.active_count(),
+                'gc_objects': len(gc.get_objects())
+            }
+        }
+        
+        if format.lower() == 'json':
+            return json.dumps(report, indent=2, default=str)
+        else:
+            return str(report)
+    
+    def cleanup(self):
+        """Clean up resources and stop monitoring"""
+        self.stop_monitoring.set()
+        
+        if self.monitoring_thread and self.monitoring_thread.is_alive():
+            self.monitoring_thread.join(timeout=5)
+        
+        # Clear profilers
+        self.profilers.clear()
+        
+        print("[PerformanceProfiler] Performance profiler cleaned up")
+
+
+# Context manager for easy profiling
+class ProfileOperation:
+    """Context manager for profiling operations"""
+    
+    def __init__(self, profiler: PerformanceProfiler, operation_id: str, operation_type: str):
+        self.profiler = profiler
+        self.operation_id = operation_id
+        self.operation_type = operation_type
+        self.profile_id = None
+        self.profile = None
+    
+    def __enter__(self):
+        self.profile_id = self.profiler.start_operation_profiling(self.operation_id, self.operation_type)
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.profile_id:
+            self.profile = self.profiler.stop_operation_profiling(self.profile_id)
+        return False
+
+
+# Decorator for automatic function profiling
+def profile_function(profiler: PerformanceProfiler, operation_type: str = "function"):
+    """Decorator to automatically profile functions"""
+    def decorator(func: Callable) -> Callable:
+        def wrapper(*args, **kwargs):
+            func_name = func.__name__
+            operation_id = f"{func_name}_{int(time.time())}"
+            
+            with ProfileOperation(profiler, operation_id, operation_type):
+                return func(*args, **kwargs)
+        
+        return wrapper
+    return decorator
+
+
+# Global profiler instance
+_global_profiler: Optional[PerformanceProfiler] = None
+
+
+def get_global_profiler() -> PerformanceProfiler:
+    """Get or create global performance profiler"""
+    global _global_profiler
+    if _global_profiler is None:
+        _global_profiler = PerformanceProfiler()
+    return _global_profiler
+
+
+def profile_function_global(operation_type: str = "function"):
+    """Decorator using global profiler"""
+    return profile_function(get_global_profiler(), operation_type)

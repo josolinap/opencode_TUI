@@ -1,0 +1,675 @@
+"""
+Monitoring Integration for Neo-Clone + OpenCode TUI
+
+This module provides the main integration point for all monitoring components:
+- Coordinates distributed tracing, metrics collection, and performance profiling
+- Provides unified API for monitoring operations
+- Handles monitoring lifecycle and configuration
+- Integrates with OpenCode TUI agent selection
+"""
+
+import asyncio
+import threading
+import time
+from typing import Dict, List, Any, Optional, Callable
+from dataclasses import dataclass, field
+from datetime import datetime
+import json
+import logging
+
+# Import error handling
+try:
+    from .error_handling import (
+        MonitoringErrorHandler, get_global_error_handler, 
+        handle_monitoring_error, safe_execute, monitoring_error_handler
+    )
+    ERROR_HANDLING_AVAILABLE = True
+except ImportError:
+    ERROR_HANDLING_AVAILABLE = False
+    logging.warning("Error handling module not available")
+
+# Import monitoring components with robust fallback handling
+def _safe_import(module_path: str, class_name: str):
+    """Safely import a class with multiple fallback paths"""
+    import importlib
+    import sys
+    
+    # Try relative import first
+    try:
+        module = importlib.import_module(module_path, package=__package__)
+        return getattr(module, class_name)
+    except (ImportError, AttributeError):
+        pass
+    
+    # Try absolute import with neo_clone.monitoring prefix
+    try:
+        full_path = f"neo_clone.monitoring.{module_path}"
+        module = importlib.import_module(full_path)
+        return getattr(module, class_name)
+    except (ImportError, AttributeError):
+        pass
+    
+    # Try direct import
+    try:
+        module = importlib.import_module(module_path)
+        return getattr(module, class_name)
+    except (ImportError, AttributeError):
+        pass
+    
+    return None
+
+# Import all components safely
+DistributedTracer = _safe_import('distributed_tracing', 'DistributedTracer')
+get_global_tracer = _safe_import('distributed_tracing', 'get_global_tracer')
+MetricsCollector = _safe_import('metrics_collector', 'MetricsCollector')
+get_global_collector = _safe_import('metrics_collector', 'get_global_collector')
+PerformanceProfiler = _safe_import('performance_profiler', 'PerformanceProfiler')
+get_global_profiler = _safe_import('performance_profiler', 'get_global_profiler')
+ProfileOperation = _safe_import('performance_profiler', 'ProfileOperation')
+MonitoringDashboard = _safe_import('tui_dashboard', 'MonitoringDashboard')
+BrainOperationsMonitor = _safe_import('brain_integration', 'BrainOperationsMonitor')
+SkillsExecutionMonitor = _safe_import('skills_integration', 'SkillsExecutionMonitor')
+
+# Log import status
+import logging
+logger = logging.getLogger(__name__)
+if DistributedTracer is None:
+    logger.warning("DistributedTracer not available - tracing disabled")
+if MetricsCollector is None:
+    logger.warning("MetricsCollector not available - metrics disabled")
+if PerformanceProfiler is None:
+    logger.warning("PerformanceProfiler not available - profiling disabled")
+if MonitoringDashboard is None:
+    logger.warning("MonitoringDashboard not available - dashboard disabled")
+if BrainOperationsMonitor is None:
+    logger.warning("BrainOperationsMonitor not available - brain monitoring disabled")
+if SkillsExecutionMonitor is None:
+    logger.warning("SkillsExecutionMonitor not available - skills monitoring disabled")
+
+
+@dataclass
+class MonitoringConfig:
+    """Configuration for the monitoring system"""
+    enabled: bool = True
+    tracing_enabled: bool = True
+    metrics_enabled: bool = True
+    profiling_enabled: bool = True
+    dashboard_enabled: bool = True
+    
+    # Tracing configuration
+    tracing_service_name: str = "neo-clone-opencode"
+    tracing_endpoint: Optional[str] = None
+    tracing_sample_rate: float = 1.0
+    
+    # Metrics configuration
+    metrics_endpoint: Optional[str] = None
+    metrics_export_interval: float = 30.0
+    
+    # Profiling configuration
+    profiling_sample_rate: float = 0.1  # Profile 10% of operations
+    profiling_min_duration_ms: float = 100.0  # Only profile operations > 100ms
+    
+    # Dashboard configuration
+    dashboard_refresh_interval: float = 2.0
+    dashboard_port: int = 8080
+    
+    # Performance thresholds
+    cpu_threshold: float = 80.0
+    memory_threshold: float = 80.0
+    response_time_threshold: float = 1000.0
+    
+    # Integration settings
+    auto_instrument_brain: bool = True
+    auto_instrument_skills: bool = True
+    opencode_integration: bool = True
+
+
+@dataclass
+class MonitoringStatus:
+    """Status of the monitoring system"""
+    initialized: bool = False
+    tracing_active: bool = False
+    metrics_active: bool = False
+    profiling_active: bool = False
+    dashboard_active: bool = False
+    brain_monitoring_active: bool = False
+    skills_monitoring_active: bool = False
+    
+    start_time: Optional[datetime] = None
+    operations_monitored: int = 0
+    errors_count: int = 0
+    last_error: Optional[str] = None
+
+
+class MonitoringIntegration:
+    """Main integration class for Neo-Clone monitoring"""
+    
+    def __init__(self, config: Optional[MonitoringConfig] = None):
+        self.config = config or MonitoringConfig()
+        self.status = MonitoringStatus()
+        self.logger = logging.getLogger(__name__)
+        
+        # Monitoring components
+        self.tracer: Optional[DistributedTracer] = None
+        self.metrics_collector: Optional[MetricsCollector] = None
+        self.profiler: Optional[PerformanceProfiler] = None
+        self.dashboard: Optional[MonitoringDashboard] = None
+        self.brain_monitor: Optional[BrainOperationsMonitor] = None
+        self.skills_monitor: Optional[SkillsExecutionMonitor] = None
+        
+        # Background tasks
+        self.background_tasks: List[asyncio.Task] = []
+        self.shutdown_event = threading.Event()
+        
+        # Operation tracking
+        self.active_operations: Dict[str, Dict[str, Any]] = {}
+        self.operation_counter = 0
+        
+        # Initialize if enabled
+        if self.config.enabled:
+            self.initialize()
+    
+    def initialize(self) -> bool:
+        """Initialize all monitoring components"""
+        try:
+            self.logger.info("[MonitoringIntegration] Initializing monitoring system")
+            
+            # Initialize error handler if available
+            if ERROR_HANDLING_AVAILABLE:
+                self.error_handler = get_global_error_handler()
+                self.logger.info("[MonitoringIntegration] Error handler initialized")
+            else:
+                self.error_handler = None
+                self.logger.warning("[MonitoringIntegration] Error handling not available")
+            
+            # Initialize distributed tracing
+            if self.config.tracing_enabled and DistributedTracer:
+                self.tracer = DistributedTracer({
+                    'service_name': self.config.tracing_service_name,
+                    'endpoint': self.config.tracing_endpoint,
+                    'sample_rate': self.config.tracing_sample_rate
+                })
+                self.status.tracing_active = True
+                self.logger.info("[MonitoringIntegration] Distributed tracing initialized")
+            
+            # Initialize metrics collector
+            if self.config.metrics_enabled and MetricsCollector:
+                self.metrics_collector = MetricsCollector({
+                    'endpoint': self.config.metrics_endpoint,
+                    'export_interval': self.config.metrics_export_interval
+                })
+                self.status.metrics_active = True
+                self.logger.info("[MonitoringIntegration] Metrics collector initialized")
+            
+            # Initialize performance profiler
+            if self.config.profiling_enabled and PerformanceProfiler:
+                self.profiler = PerformanceProfiler({
+                    'monitoring_interval': 1.0,
+                    'cpu_high_threshold': self.config.cpu_threshold,
+                    'memory_high_threshold': self.config.memory_threshold,
+                    'response_time_slow_threshold': self.config.response_time_threshold
+                })
+                self.status.profiling_active = True
+                self.logger.info("[MonitoringIntegration] Performance profiler initialized")
+            
+            # Initialize TUI dashboard
+            if self.config.dashboard_enabled and MonitoringDashboard:
+                self.dashboard = MonitoringDashboard({
+                    'refresh_interval': self.config.dashboard_refresh_interval
+                })
+                self.status.dashboard_active = True
+                self.logger.info("[MonitoringIntegration] TUI dashboard initialized")
+            
+            # Initialize brain operations monitor
+            if self.config.auto_instrument_brain and BrainOperationsMonitor:
+                self.brain_monitor = BrainOperationsMonitor(
+                    self.tracer, self.metrics_collector, self.profiler
+                )
+                self.status.brain_monitoring_active = True
+                self.logger.info("[MonitoringIntegration] Brain operations monitor initialized")
+            
+            # Initialize skills execution monitor
+            if self.config.auto_instrument_skills and SkillsExecutionMonitor:
+                self.skills_monitor = SkillsExecutionMonitor(
+                    self.tracer, self.metrics_collector, self.profiler
+                )
+                self.status.skills_monitoring_active = True
+                self.logger.info("[MonitoringIntegration] Skills execution monitor initialized")
+            
+            self.status.initialized = True
+            self.status.start_time = datetime.now()
+            
+            self.logger.info("[MonitoringIntegration] Monitoring system initialized successfully")
+            return True
+            
+        except Exception as e:
+            error_msg = f"[MonitoringIntegration] Failed to start operation: {e}"
+            self.logger.error(error_msg)
+            self.status.errors_count += 1
+            
+            # Handle with error handler if available
+            if ERROR_HANDLING_AVAILABLE and self.error_handler:
+                handle_monitoring_error(
+                    e,
+                    {
+                        'component': 'MonitoringIntegration',
+                        'action': 'start_operation',
+                        'operation_type': operation_type,
+                        'operation_id': operation_id
+                    },
+                    'MonitoringIntegration'
+                )
+            
+            return ""
+        
+        # Generate operation ID if not provided
+        if operation_id is None:
+            self.operation_counter += 1
+            operation_id = f"{operation_type}_{self.operation_counter}_{int(time.time())}"
+        
+        try:
+            # Start tracing
+            span_id = None
+            if self.tracer:
+                span_id = self.tracer.start_span(
+                    operation_type, 
+                    operation_id, 
+                    metadata or {}
+                )
+            
+            # Start metrics collection
+            if self.metrics_collector:
+                self.metrics_collector.start_operation_timer(operation_id, operation_type)
+            
+            # Start profiling (sample based on configuration)
+            profile_id = None
+            if self.profiler and self._should_profile_operation(operation_type):
+                profile_id = self.profiler.start_operation_profiling(operation_id, operation_type)
+            
+            # Track active operation
+            self.active_operations[operation_id] = {
+                'type': operation_type,
+                'start_time': datetime.now(),
+                'span_id': span_id,
+                'profile_id': profile_id,
+                'metadata': metadata or {}
+            }
+            
+            self.status.operations_monitored += 1
+            
+            return operation_id
+            
+        except Exception as e:
+            self.logger.error(f"[MonitoringIntegration] Failed to start operation: {e}")
+            self.status.errors_count += 1
+            return operation_id
+    
+    def end_operation(self, operation_id: str, success: bool = True, 
+                     result: Optional[Any] = None, error: Optional[str] = None) -> Dict[str, Any]:
+        """End monitoring an operation"""
+        if not self.status.initialized or operation_id not in self.active_operations:
+            return {}
+        
+        operation = self.active_operations[operation_id]
+        end_time = datetime.now()
+        duration_ms = (end_time - operation['start_time']).total_seconds() * 1000
+        
+        try:
+            # End tracing
+            if self.tracer and operation['span_id']:
+                self.tracer.end_span(
+                    operation['span_id'],
+                    success,
+                    {'duration_ms': duration_ms, 'error': error}
+                )
+            
+            # Record metrics
+            if self.metrics_collector:
+                self.metrics_collector.record_operation_duration(
+                    operation['type'], duration_ms
+                )
+                self.metrics_collector.record_operation_result(operation['type'], success)
+                
+                # End operation timer
+                self.metrics_collector.end_operation_timer(operation_id)
+            
+            # End profiling
+            profile_result = None
+            if self.profiler and operation['profile_id']:
+                profile_result = self.profiler.stop_operation_profiling(operation['profile_id'])
+            
+            # Create operation summary
+            summary = {
+                'operation_id': operation_id,
+                'operation_type': operation['type'],
+                'duration_ms': duration_ms,
+                'success': success,
+                'start_time': operation['start_time'].isoformat(),
+                'end_time': end_time.isoformat(),
+                'metadata': operation['metadata'],
+                'profile_result': profile_result,
+                'error': error
+            }
+            
+            # Clean up
+            del self.active_operations[operation_id]
+            
+            return summary
+            
+        except Exception as e:
+            error_msg = f"[MonitoringIntegration] Failed to end operation: {e}"
+            self.logger.error(error_msg)
+            self.status.errors_count += 1
+            
+            # Handle with error handler if available
+            if ERROR_HANDLING_AVAILABLE and self.error_handler:
+                handle_monitoring_error(
+                    e,
+                    {
+                        'component': 'MonitoringIntegration',
+                        'action': 'end_operation',
+                        'operation_id': operation_id,
+                        'success': success
+                    },
+                    'MonitoringIntegration'
+                )
+            
+            return {'error': str(e), 'operation_id': operation_id}
+    
+    def _should_profile_operation(self, operation_type: str) -> bool:
+        """Determine if an operation should be profiled based on sampling"""
+        import random
+        return random.random() < self.config.profiling_sample_rate
+    
+    def record_metric(self, name: str, value: float, tags: Optional[Dict[str, str]] = None):
+        """Record a custom metric"""
+        if self.metrics_collector:
+            self.metrics_collector.record_metric(name, value, tags)
+    
+    def record_event(self, event_type: str, data: Dict[str, Any]):
+        """Record a custom event"""
+        if self.tracer:
+            self.tracer.record_event(event_type, data)
+    
+    def get_monitoring_summary(self) -> Dict[str, Any]:
+        """Get comprehensive monitoring summary"""
+        summary = {
+            'status': {
+                'initialized': self.status.initialized,
+                'tracing_active': self.status.tracing_active,
+                'metrics_active': self.status.metrics_active,
+                'profiling_active': self.status.profiling_active,
+                'dashboard_active': self.status.dashboard_active,
+                'uptime_seconds': (datetime.now() - self.status.start_time).total_seconds() if self.status.start_time else 0,
+                'operations_monitored': self.status.operations_monitored,
+                'active_operations': len(self.active_operations),
+                'errors_count': self.status.errors_count,
+                'last_error': self.status.last_error
+            },
+            'performance': {},
+            'traces': {},
+            'metrics': {},
+            'bottlenecks': {}
+        }
+        
+        # Add performance data
+        if self.profiler:
+            summary['performance'] = self.profiler.analyze_performance_trends()
+            summary['bottlenecks'] = self.profiler.get_bottleneck_summary()
+        
+        # Add trace data
+        if self.tracer:
+            summary['traces'] = self.tracer.get_trace_summary()
+        
+        # Add metrics data
+        if self.metrics_collector:
+            summary['metrics'] = self.metrics_collector.get_metrics_summary()
+        
+        return summary
+    
+    def export_monitoring_data(self, format: str = 'json') -> str:
+        """Export all monitoring data"""
+        data = {
+            'export_time': datetime.now().isoformat(),
+            'config': {
+                'enabled': self.config.enabled,
+                'tracing_enabled': self.config.tracing_enabled,
+                'metrics_enabled': self.config.metrics_enabled,
+                'profiling_enabled': self.config.profiling_enabled
+            },
+            'summary': self.get_monitoring_summary()
+        }
+        
+        # Add detailed data from components
+        if self.profiler:
+            data['performance_report'] = self.profiler.export_performance_report()
+        
+        if self.tracer:
+            data['recent_traces'] = self.tracer.get_recent_traces()
+        
+        if self.metrics_collector:
+            data['metrics_data'] = self.metrics_collector.export_metrics()
+        
+        if format.lower() == 'json':
+            return json.dumps(data, indent=2, default=str)
+        else:
+            return str(data)
+    
+    def start_dashboard(self) -> bool:
+        """Start the monitoring dashboard"""
+        if not self.dashboard:
+            return False
+        
+        try:
+            # This would start the TUI dashboard
+            # Implementation depends on the dashboard system
+            self.logger.info("[MonitoringIntegration] Dashboard started")
+            return True
+        except Exception as e:
+            self.logger.error(f"[MonitoringIntegration] Failed to start dashboard: {e}")
+            return False
+    
+    def shutdown(self):
+        """Shutdown the monitoring system"""
+        self.logger.info("[MonitoringIntegration] Shutting down monitoring system")
+        
+        try:
+            # End all active operations
+            for operation_id in list(self.active_operations.keys()):
+                self.end_operation(operation_id, False, None, "System shutdown")
+            
+            # Shutdown components
+            if self.profiler:
+                self.profiler.cleanup()
+            
+            if self.metrics_collector:
+                self.metrics_collector.shutdown()
+            
+            if self.tracer:
+                self.tracer.shutdown()
+            
+            # Cancel background tasks
+            for task in self.background_tasks:
+                if not task.done():
+                    task.cancel()
+            
+            self.status.initialized = False
+            self.logger.info("[MonitoringIntegration] Monitoring system shutdown complete")
+            
+        except Exception as e:
+            self.logger.error(f"[MonitoringIntegration] Error during shutdown: {e}")
+    
+    def __enter__(self):
+        """Context manager entry"""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit"""
+        self.shutdown()
+
+
+# Context manager for monitoring operations
+class MonitoredOperation:
+    """Context manager for monitoring operations with automatic cleanup"""
+    
+    def __init__(self, monitoring: MonitoringIntegration, operation_type: str, 
+                 operation_id: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None):
+        self.monitoring = monitoring
+        self.operation_type = operation_type
+        self.operation_id = operation_id
+        self.metadata = metadata
+        self.actual_operation_id = None
+        self.success = True
+        self.error = None
+    
+    def __enter__(self):
+        self.actual_operation_id = self.monitoring.start_operation(
+            self.operation_type, self.operation_id, self.metadata
+        )
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is not None:
+            self.success = False
+            self.error = str(exc_val)
+        
+        self.monitoring.end_operation(
+            self.actual_operation_id, self.success, None, self.error
+        )
+        return False
+
+
+# Global monitoring integration instance
+_global_monitoring: Optional[MonitoringIntegration] = None
+
+
+def get_global_monitoring() -> MonitoringIntegration:
+    """Get or create global monitoring integration"""
+    global _global_monitoring
+    if _global_monitoring is None:
+        _global_monitoring = MonitoringIntegration()
+    return _global_monitoring
+
+
+def initialize_monitoring(config: Optional[MonitoringConfig] = None) -> MonitoringIntegration:
+    """Initialize global monitoring with custom config"""
+    global _global_monitoring
+    _global_monitoring = MonitoringIntegration(config)
+    return _global_monitoring
+
+
+def monitor_operation(operation_type: str, operation_id: Optional[str] = None, 
+                     metadata: Optional[Dict[str, Any]] = None):
+    """Decorator for monitoring functions"""
+    def decorator(func: Callable) -> Callable:
+        def wrapper(*args, **kwargs):
+            monitoring = get_global_monitoring()
+            with MonitoredOperation(monitoring, operation_type, operation_id, metadata):
+                return func(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
+# OpenCode TUI integration functions
+def integrate_with_opencode_tui():
+    """Integration functions for OpenCode TUI agent selection"""
+    
+    def create_monitored_neo_clone_wrapper(original_neo_clone_func):
+        """Create a wrapper for neo-clone tool that adds monitoring"""
+        def monitored_neo_clone(message: str, mode: str = "tool", timeout: int = 300000):
+            monitoring = get_global_monitoring()
+            
+            with MonitoredOperation(monitoring, "neo_clone_execution", 
+                                  metadata={'mode': mode, 'timeout': timeout}):
+                try:
+                    # Call original neo-clone function
+                    result = original_neo_clone_func(message, mode, timeout)
+                    
+                    # Record success metrics
+                    monitoring.record_metric("neo_clone.success", 1, {
+                        'mode': mode
+                    })
+                    
+                    return result
+                    
+                except Exception as e:
+                    # Record error metrics
+                    monitoring.record_metric("neo_clone.error", 1, {
+                        'mode': mode,
+                        'error_type': type(e).__name__
+                    })
+                    raise
+        
+        return monitored_neo_clone
+    
+    def create_monitored_model_selector_wrapper(original_model_selector_func):
+        """Create a wrapper for model selector that adds monitoring"""
+        def monitored_model_selector(task: str, requirements: Dict[str, Any], 
+                                   max_recommendations: int = 3, format: str = "simple"):
+            monitoring = get_global_monitoring()
+            
+            with MonitoredOperation(monitoring, "model_selection",
+                                  metadata={'task': task, 'format': format}):
+                try:
+                    result = original_model_selector_func(task, requirements, 
+                                                       max_recommendations, format)
+                    
+                    # Record model selection metrics
+                    monitoring.record_metric("model_selection.success", 1, {
+                        'task_type': task.split()[0] if task else 'unknown'
+                    })
+                    
+                    return result
+                    
+                except Exception as e:
+                    monitoring.record_metric("model_selection.error", 1, {
+                        'error_type': type(e).__name__
+                    })
+                    raise
+        
+        return monitored_model_selector
+    
+    return {
+        'neo_clone_wrapper': create_monitored_neo_clone_wrapper,
+        'model_selector_wrapper': create_monitored_model_selector_wrapper
+    }
+
+
+# Utility functions
+def get_health_status() -> Dict[str, Any]:
+    """Get health status of monitoring system"""
+    monitoring = get_global_monitoring()
+    summary = monitoring.get_monitoring_summary()
+    
+    # Determine overall health
+    status = summary['status']
+    health_score = 100
+    
+    if status['errors_count'] > 0:
+        health_score -= min(status['errors_count'] * 5, 50)
+    
+    if not status['initialized']:
+        health_score = 0
+    
+    # Check for active bottlenecks
+    bottlenecks = summary.get('bottlenecks', {})
+    if isinstance(bottlenecks, dict) and bottlenecks.get('total_bottlenecks', 0) > 5:
+        health_score -= 20
+    
+    health_status = "healthy"
+    if health_score < 50:
+        health_status = "unhealthy"
+    elif health_score < 80:
+        health_status = "degraded"
+    
+    return {
+        'status': health_status,
+        'score': health_score,
+        'details': summary
+    }
+
+
+def create_monitoring_report() -> str:
+    """Create comprehensive monitoring report"""
+    monitoring = get_global_monitoring()
+    return monitoring.export_monitoring_data()

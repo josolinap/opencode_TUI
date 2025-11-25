@@ -1,0 +1,735 @@
+"""
+Distributed Tracing System for Neo-Clone
+
+This module provides comprehensive distributed tracing capabilities using OpenTelemetry
+to monitor and trace operations across the Neo-Clone brain system, skills execution,
+and multi-session processing.
+
+Features:
+- OpenTelemetry integration for standardized tracing
+- Custom span creation for brain operations
+- Performance monitoring and bottleneck detection
+- Distributed context propagation
+- Real-time trace aggregation and analysis
+"""
+
+import asyncio
+import time
+import uuid
+import json
+import logging
+from typing import Dict, List, Optional, Any, Callable, Union
+from datetime import datetime, timedelta
+from dataclasses import dataclass, field
+from enum import Enum
+from contextlib import asynccontextmanager, contextmanager
+import threading
+from collections import defaultdict, deque
+
+# Try to import OpenTelemetry, fallback to mock implementation if not available
+try:
+    from opentelemetry import trace, baggage, context
+    from opentelemetry.exporter.jaeger.thrift import JaegerExporter
+    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.semantic_conventions.trace import SpanKind
+    from opentelemetry.propagate import inject, extract
+    from opentelemetry.trace import Status, StatusCode
+    OPENTELEMETRY_AVAILABLE = True
+except ImportError as e:
+    OPENTELEMETRY_AVAILABLE = False
+    logging.warning(f"OpenTelemetry not available ({e}), using mock implementation")
+    # Create mock objects to prevent AttributeError
+    trace = None
+    baggage = None
+    context = None
+
+logger = logging.getLogger(__name__)
+
+
+class TraceOperationType(Enum):
+    """Types of operations that can be traced"""
+    BRAIN_PROCESSING = "brain_processing"
+    INTENT_RECOGNITION = "intent_recognition"
+    SKILL_EXECUTION = "skill_execution"
+    MEMORY_ACCESS = "memory_access"
+    CONTEXT_RETRIEVAL = "context_retrieval"
+    REASONING_CHAIN = "reasoning_chain"
+    COLLABORATIVE_PROCESSING = "collaborative_processing"
+    MULTI_SESSION = "multi_session"
+    CACHE_ACCESS = "cache_access"
+    ERROR_HANDLING = "error_handling"
+    PERFORMANCE_METRICS = "performance_metrics"
+
+
+class TraceStatus(Enum):
+    """Trace status enumeration"""
+    SUCCESS = "success"
+    ERROR = "error"
+    TIMEOUT = "timeout"
+    CANCELLED = "cancelled"
+
+
+@dataclass
+class TraceSpan:
+    """Custom trace span data structure"""
+    span_id: str
+    trace_id: str
+    parent_span_id: Optional[str]
+    operation_name: str
+    operation_type: TraceOperationType
+    start_time: datetime
+    end_time: Optional[datetime] = None
+    duration_ms: Optional[float] = None
+    status: TraceStatus = TraceStatus.SUCCESS
+    tags: Dict[str, Any] = field(default_factory=dict)
+    logs: List[Dict[str, Any]] = field(default_factory=list)
+    service_name: str = "neo-clone"
+    component: str = "brain"
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert span to dictionary"""
+        return {
+            "span_id": self.span_id,
+            "trace_id": self.trace_id,
+            "parent_span_id": self.parent_span_id,
+            "operation_name": self.operation_name,
+            "operation_type": self.operation_type.value,
+            "start_time": self.start_time.isoformat(),
+            "end_time": self.end_time.isoformat() if self.end_time else None,
+            "duration_ms": self.duration_ms,
+            "status": self.status.value,
+            "tags": self.tags,
+            "logs": self.logs,
+            "service_name": self.service_name,
+            "component": self.component
+        }
+
+
+@dataclass
+class PerformanceMetrics:
+    """Performance metrics for operations"""
+    operation_type: str
+    total_operations: int = 0
+    successful_operations: int = 0
+    failed_operations: int = 0
+    total_duration_ms: float = 0.0
+    avg_duration_ms: float = 0.0
+    min_duration_ms: float = float('inf')
+    max_duration_ms: float = 0.0
+    p95_duration_ms: float = 0.0
+    p99_duration_ms: float = 0.0
+    error_rate: float = 0.0
+    last_updated: datetime = field(default_factory=datetime.now)
+    
+    def update(self, duration_ms: float, success: bool) -> None:
+        """Update metrics with new operation"""
+        self.total_operations += 1
+        self.total_duration_ms += duration_ms
+        self.avg_duration_ms = self.total_duration_ms / self.total_operations
+        
+        if success:
+            self.successful_operations += 1
+        else:
+            self.failed_operations += 1
+        
+        self.min_duration_ms = min(self.min_duration_ms, duration_ms)
+        self.max_duration_ms = max(self.max_duration_ms, duration_ms)
+        self.error_rate = self.failed_operations / self.total_operations
+        self.last_updated = datetime.now()
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert metrics to dictionary"""
+        return {
+            "operation_type": self.operation_type,
+            "total_operations": self.total_operations,
+            "successful_operations": self.successful_operations,
+            "failed_operations": self.failed_operations,
+            "total_duration_ms": self.total_duration_ms,
+            "avg_duration_ms": self.avg_duration_ms,
+            "min_duration_ms": self.min_duration_ms if self.min_duration_ms != float('inf') else 0.0,
+            "max_duration_ms": self.max_duration_ms,
+            "p95_duration_ms": self.p95_duration_ms,
+            "p99_duration_ms": self.p99_duration_ms,
+            "error_rate": self.error_rate,
+            "last_updated": self.last_updated.isoformat()
+        }
+
+
+class MockTracer:
+    """Mock tracer implementation when OpenTelemetry is not available"""
+    
+    def __init__(self, service_name: str = "neo-clone"):
+        self.service_name = service_name
+        self.active_spans: Dict[str, TraceSpan] = {}
+        self.completed_spans: List[TraceSpan] = []
+        self._lock = threading.Lock()
+    
+    def start_span(self, name: str, operation_type: TraceOperationType, **kwargs) -> 'MockSpan':
+        """Start a new span"""
+        span_id = str(uuid.uuid4())
+        trace_id = str(uuid.uuid4())
+        
+        # Get parent span if available
+        parent_span_id = kwargs.get('parent_span_id')
+        if not parent_span_id and self.active_spans:
+            # Use the most recent active span as parent
+            parent_span_id = list(self.active_spans.values())[-1].span_id
+        
+        span = TraceSpan(
+            span_id=span_id,
+            trace_id=trace_id,
+            parent_span_id=parent_span_id,
+            operation_name=name,
+            operation_type=operation_type,
+            start_time=datetime.now(),
+            tags=kwargs.get('tags', {}),
+            service_name=self.service_name
+        )
+        
+        with self._lock:
+            self.active_spans[span_id] = span
+        
+        return MockSpan(span, self)
+    
+    def get_span(self, span_id: str) -> Optional[TraceSpan]:
+        """Get span by ID"""
+        with self._lock:
+            return self.active_spans.get(span_id)
+    
+    def finish_span(self, span_id: str, status: TraceStatus = TraceStatus.SUCCESS) -> None:
+        """Finish a span"""
+        with self._lock:
+            span = self.active_spans.get(span_id)
+            if span:
+                span.end_time = datetime.now()
+                span.duration_ms = (span.end_time - span.start_time).total_seconds() * 1000
+                span.status = status
+                
+                self.completed_spans.append(span)
+                del self.active_spans[span_id]
+    
+    def get_active_spans(self) -> List[TraceSpan]:
+        """Get all active spans"""
+        with self._lock:
+            return list(self.active_spans.values())
+    
+    def get_completed_spans(self, limit: int = 1000) -> List[TraceSpan]:
+        """Get completed spans"""
+        with self._lock:
+            return self.completed_spans[-limit:]
+
+
+class MockSpan:
+    """Mock span implementation"""
+    
+    def __init__(self, trace_span: TraceSpan, tracer: MockTracer):
+        self.trace_span = trace_span
+        self.tracer = tracer
+        self._finished = False
+    
+    def set_tag(self, key: str, value: Any) -> None:
+        """Set a tag on the span"""
+        if not self._finished:
+            self.trace_span.tags[key] = value
+    
+    def log_event(self, event: str, attributes: Dict[str, Any] = None) -> None:
+        """Log an event to the span"""
+        if not self._finished:
+            log_entry = {
+                "timestamp": datetime.now().isoformat(),
+                "event": event,
+                "attributes": attributes or {}
+            }
+            self.trace_span.logs.append(log_entry)
+    
+    def finish(self, status: TraceStatus = TraceStatus.SUCCESS) -> None:
+        """Finish the span"""
+        if not self._finished:
+            self.tracer.finish_span(self.trace_span.span_id, status)
+            self._finished = True
+    
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type:
+            self.finish(TraceStatus.ERROR)
+            self.set_tag("error", True)
+            self.set_tag("error.message", str(exc_val))
+        else:
+            self.finish(TraceStatus.SUCCESS)
+
+
+class DistributedTracer:
+    """
+    Main distributed tracing system for Neo-Clone
+    
+    Provides comprehensive tracing capabilities with OpenTelemetry integration
+    and fallback mock implementation when OpenTelemetry is not available.
+    """
+    
+    def __init__(
+        self,
+        service_name: str = "neo-clone",
+        enable_opentelemetry: bool = True,
+        jaeger_endpoint: Optional[str] = None,
+        otlp_endpoint: Optional[str] = None,
+        max_spans_in_memory: int = 10000,
+        metrics_retention_hours: int = 24
+    ):
+        """
+        Initialize distributed tracer
+        
+        Args:
+            service_name: Name of the service being traced
+            enable_opentelemetry: Whether to use OpenTelemetry if available
+            jaeger_endpoint: Jaeger collector endpoint
+            otlp_endpoint: OTLP exporter endpoint
+            max_spans_in_memory: Maximum spans to keep in memory
+            metrics_retention_hours: Hours to retain metrics
+        """
+        self.service_name = service_name
+        self.max_spans_in_memory = max_spans_in_memory
+        self.metrics_retention_hours = metrics_retention_hours
+        
+        # Initialize tracer
+        self.tracer = self._initialize_tracer(enable_opentelemetry, jaeger_endpoint, otlp_endpoint)
+        
+        # Performance metrics storage
+        self.performance_metrics: Dict[str, PerformanceMetrics] = defaultdict(
+            lambda: PerformanceMetrics(operation_type="")
+        )
+        
+        # Active spans tracking
+        self.active_operations: Dict[str, Dict[str, Any]] = {}
+        
+        # Trace aggregation
+        self.trace_aggregation: Dict[str, List[TraceSpan]] = defaultdict(list)
+        
+        # Background tasks
+        self._cleanup_task: Optional[asyncio.Task] = None
+        self._metrics_task: Optional[asyncio.Task] = None
+        
+        # Lock for thread safety
+        self._lock = threading.Lock()
+        
+        logger.info(f"Distributed tracer initialized: service={service_name}, opentelemetry={OPENTELEMETRY_AVAILABLE and enable_opentelemetry}")
+    
+    def _initialize_tracer(
+        self,
+        enable_opentelemetry: bool,
+        jaeger_endpoint: Optional[str],
+        otlp_endpoint: Optional[str]
+    ) -> Union[MockTracer, Any]:
+        """Initialize tracer with OpenTelemetry or mock implementation"""
+        
+        if OPENTELEMETRY_AVAILABLE and enable_opentelemetry:
+            try:
+                # Create resource
+                resource = Resource.create({
+                    "service.name": self.service_name,
+                    "service.version": "1.0.0",
+                    "service.namespace": "neo-clone"
+                })
+                
+                # Set up tracer provider
+                trace.set_tracer_provider(TracerProvider(resource=resource))
+                tracer_provider = trace.get_tracer_provider()
+                
+                # Add exporters
+                if jaeger_endpoint:
+                    jaeger_exporter = JaegerExporter(
+                        endpoint=jaeger_endpoint,
+                        collector_endpoint=jaeger_endpoint
+                    )
+                    span_processor = BatchSpanProcessor(jaeger_exporter)
+                    tracer_provider.add_span_processor(span_processor)
+                    logger.info(f"Jaeger exporter configured: {jaeger_endpoint}")
+                
+                if otlp_endpoint:
+                    otlp_exporter = OTLPSpanExporter(endpoint=otlp_endpoint)
+                    span_processor = BatchSpanProcessor(otlp_exporter)
+                    tracer_provider.add_span_processor(span_processor)
+                    logger.info(f"OTLP exporter configured: {otlp_endpoint}")
+                
+                # Get tracer
+                tracer = trace.get_tracer(__name__)
+                logger.info("OpenTelemetry tracer initialized successfully")
+                return tracer
+                
+            except Exception as e:
+                logger.warning(f"Failed to initialize OpenTelemetry: {e}, falling back to mock tracer")
+        
+        # Fallback to mock tracer
+        logger.info("Using mock tracer implementation")
+        return MockTracer(self.service_name)
+    
+    def start_span(
+        self,
+        name: str,
+        operation_type: TraceOperationType,
+        parent_span_id: Optional[str] = None,
+        tags: Optional[Dict[str, Any]] = None,
+        **kwargs
+    ) -> Union[MockSpan, Any]:
+        """
+        Start a new trace span
+        
+        Args:
+            name: Name of the operation
+            operation_type: Type of operation being traced
+            parent_span_id: ID of parent span (for nested operations)
+            tags: Additional tags to add to the span
+            **kwargs: Additional arguments
+            
+        Returns:
+            Span object
+        """
+        try:
+            if isinstance(self.tracer, MockTracer):
+                # Use mock tracer
+                span = self.tracer.start_span(
+                    name=name,
+                    operation_type=operation_type,
+                    parent_span_id=parent_span_id,
+                    tags=tags or {}
+                )
+            else:
+                # Use OpenTelemetry tracer
+                span = self.tracer.start_span(
+                    name=name,
+                    kind=SpanKind.INTERNAL,
+                    attributes={
+                        "operation.type": operation_type.value,
+                        "service.name": self.service_name,
+                        **(tags or {})
+                    }
+                )
+            
+            # Track active operation
+            span_id = getattr(span, 'trace_span', span).span_id if hasattr(span, 'trace_span') else str(span.get_span_context().span_id)
+            self.active_operations[span_id] = {
+                "name": name,
+                "operation_type": operation_type.value,
+                "start_time": datetime.now(),
+                "tags": tags or {}
+            }
+            
+            return span
+            
+        except Exception as e:
+            logger.error(f"Failed to start span: {e}")
+            # Return mock span as fallback
+            return MockTracer(self.service_name).start_span(name, operation_type, tags=tags)
+    
+    @contextmanager
+    def trace_span(
+        self,
+        name: str,
+        operation_type: TraceOperationType,
+        tags: Optional[Dict[str, Any]] = None,
+        **kwargs
+    ):
+        """
+        Context manager for tracing operations
+        
+        Args:
+            name: Name of the operation
+            operation_type: Type of operation being traced
+            tags: Additional tags to add to the span
+            **kwargs: Additional arguments
+        """
+        span = self.start_span(name, operation_type, tags=tags, **kwargs)
+        start_time = time.time()
+        
+        try:
+            yield span
+            success = True
+        except Exception as e:
+            success = False
+            if hasattr(span, 'set_tag'):
+                span.set_tag("error", True)
+                span.set_tag("error.message", str(e))
+            if hasattr(span, 'log_event'):
+                span.log_event("error", {"error": str(e)})
+            raise
+        finally:
+            # Calculate duration and update metrics
+            duration_ms = (time.time() - start_time) * 1000
+            self._update_metrics(operation_type.value, duration_ms, success)
+            
+            # Finish span
+            if hasattr(span, 'finish'):
+                span.finish(TraceStatus.SUCCESS if success else TraceStatus.ERROR)
+            
+            # Remove from active operations
+            span_id = getattr(span, 'trace_span', span).span_id if hasattr(span, 'trace_span') else str(span.get_span_context().span_id)
+            self.active_operations.pop(span_id, None)
+    
+    def _update_metrics(self, operation_type: str, duration_ms: float, success: bool) -> None:
+        """Update performance metrics"""
+        with self._lock:
+            if operation_type not in self.performance_metrics:
+                self.performance_metrics[operation_type] = PerformanceMetrics(operation_type=operation_type)
+            
+            self.performance_metrics[operation_type].update(duration_ms, success)
+    
+    def get_metrics(self, operation_type: Optional[str] = None) -> Union[Dict[str, PerformanceMetrics], PerformanceMetrics]:
+        """Get performance metrics"""
+        with self._lock:
+            if operation_type:
+                return self.performance_metrics.get(operation_type, PerformanceMetrics(operation_type=operation_type))
+            return dict(self.performance_metrics)
+    
+    def get_active_operations(self) -> List[Dict[str, Any]]:
+        """Get currently active operations"""
+        with self._lock:
+            return list(self.active_operations.values())
+    
+    def get_trace_summary(self, trace_id: str) -> Optional[Dict[str, Any]]:
+        """Get summary of a specific trace"""
+        if isinstance(self.tracer, MockTracer):
+            spans = [s for s in self.tracer.get_completed_spans() if s.trace_id == trace_id]
+            spans.extend([s for s in self.tracer.get_active_spans() if s.trace_id == trace_id])
+        else:
+            # For OpenTelemetry, we'd need to query the backend
+            return None
+        
+        if not spans:
+            return None
+        
+        # Calculate summary
+        total_duration = max(s.duration_ms or 0 for s in spans if s.duration_ms)
+        operation_types = list(set(s.operation_type.value for s in spans))
+        error_count = sum(1 for s in spans if s.status == TraceStatus.ERROR)
+        
+        return {
+            "trace_id": trace_id,
+            "span_count": len(spans),
+            "total_duration_ms": total_duration,
+            "operation_types": operation_types,
+            "error_count": error_count,
+            "success_rate": (len(spans) - error_count) / len(spans) if spans else 0,
+            "spans": [s.to_dict() for s in spans]
+        }
+    
+    def get_performance_insights(self) -> Dict[str, Any]:
+        """Get performance insights and recommendations"""
+        insights = {
+            "slow_operations": [],
+            "high_error_rate_operations": [],
+            "recommendations": [],
+            "overall_health": "good"
+        }
+        
+        with self._lock:
+            for op_type, metrics in self.performance_metrics.items():
+                if metrics.total_operations > 0:
+                    # Check for slow operations
+                    if metrics.avg_duration_ms > 5000:  # 5 seconds
+                        insights["slow_operations"].append({
+                            "operation_type": op_type,
+                            "avg_duration_ms": metrics.avg_duration_ms,
+                            "total_operations": metrics.total_operations
+                        })
+                    
+                    # Check for high error rates
+                    if metrics.error_rate > 0.1:  # 10% error rate
+                        insights["high_error_rate_operations"].append({
+                            "operation_type": op_type,
+                            "error_rate": metrics.error_rate,
+                            "failed_operations": metrics.failed_operations
+                        })
+        
+        # Generate recommendations
+        if insights["slow_operations"]:
+            insights["recommendations"].append("Consider optimizing slow operations or adding caching")
+        
+        if insights["high_error_rate_operations"]:
+            insights["recommendations"].append("Investigate and fix high error rate operations")
+        
+        # Determine overall health
+        if len(insights["slow_operations"]) > 3 or len(insights["high_error_rate_operations"]) > 2:
+            insights["overall_health"] = "poor"
+        elif insights["slow_operations"] or insights["high_error_rate_operations"]:
+            insights["overall_health"] = "warning"
+        
+        return insights
+    
+    async def start_background_tasks(self) -> None:
+        """Start background cleanup and metrics tasks"""
+        if not self._cleanup_task or self._cleanup_task.done():
+            self._cleanup_task = asyncio.create_task(self._cleanup_old_data())
+        
+        if not self._metrics_task or self._metrics_task.done():
+            self._metrics_task = asyncio.create_task(self._calculate_percentiles())
+    
+    async def _cleanup_old_data(self) -> None:
+        """Clean up old trace data"""
+        while True:
+            try:
+                await asyncio.sleep(3600)  # Run every hour
+                
+                cutoff_time = datetime.now() - timedelta(hours=self.metrics_retention_hours)
+                
+                with self._lock:
+                    # Clean old metrics
+                    old_metrics = [
+                        op_type for op_type, metrics in self.performance_metrics.items()
+                        if metrics.last_updated < cutoff_time
+                    ]
+                    for op_type in old_metrics:
+                        del self.performance_metrics[op_type]
+                    
+                    # Clean old spans if using mock tracer
+                    if isinstance(self.tracer, MockTracer):
+                        old_spans = [
+                            span for span in self.tracer.completed_spans
+                            if span.end_time and span.end_time < cutoff_time
+                        ]
+                        for span in old_spans:
+                            self.tracer.completed_spans.remove(span)
+                
+                logger.debug(f"Cleaned up {len(old_metrics)} old metrics and {len(old_spans)} old spans")
+                
+            except Exception as e:
+                logger.error(f"Error in cleanup task: {e}")
+    
+    async def _calculate_percentiles(self) -> None:
+        """Calculate percentile metrics"""
+        while True:
+            try:
+                await asyncio.sleep(300)  # Run every 5 minutes
+                
+                with self._lock:
+                    for op_type, metrics in self.performance_metrics.items():
+                        if isinstance(self.tracer, MockTracer):
+                            # Get recent spans for this operation type
+                            recent_spans = [
+                                span for span in self.tracer.completed_spans
+                                if span.operation_type.value == op_type and span.duration_ms
+                            ]
+                            
+                            if recent_spans:
+                                durations = sorted([s.duration_ms for s in recent_spans])
+                                n = len(durations)
+                                
+                                # Calculate percentiles
+                                metrics.p95_duration_ms = durations[int(0.95 * n)] if n > 0 else 0
+                                metrics.p99_duration_ms = durations[int(0.99 * n)] if n > 0 else 0
+                
+            except Exception as e:
+                logger.error(f"Error in percentile calculation: {e}")
+    
+    def shutdown(self) -> None:
+        """Shutdown the tracer and cleanup resources"""
+        try:
+            # Cancel background tasks
+            if self._cleanup_task and not self._cleanup_task.done():
+                self._cleanup_task.cancel()
+            
+            if self._metrics_task and not self._metrics_task.done():
+                self._metrics_task.cancel()
+            
+            # Shutdown OpenTelemetry if used
+            if not isinstance(self.tracer, MockTracer):
+                try:
+                    from opentelemetry.sdk.trace import TracerProvider
+                    tracer_provider = trace.get_tracer_provider()
+                    if isinstance(tracer_provider, TracerProvider):
+                        tracer_provider.shutdown()
+                except Exception as e:
+                    logger.warning(f"Error shutting down OpenTelemetry: {e}")
+            
+            logger.info("Distributed tracer shutdown complete")
+            
+        except Exception as e:
+            logger.error(f"Error during tracer shutdown: {e}")
+
+
+# Global tracer instance
+_global_tracer: Optional[DistributedTracer] = None
+_tracer_lock = threading.Lock()
+
+
+def get_distributed_tracer(**kwargs) -> DistributedTracer:
+    """Get or create global distributed tracer instance"""
+    global _global_tracer
+    
+    if _global_tracer is None:
+        with _tracer_lock:
+            if _global_tracer is None:
+                _global_tracer = DistributedTracer(**kwargs)
+    
+    return _global_tracer
+
+
+def trace_operation(operation_type: TraceOperationType, name: Optional[str] = None):
+    """
+    Decorator for tracing function execution
+    
+    Args:
+        operation_type: Type of operation being traced
+        name: Custom name for the operation (defaults to function name)
+    """
+    def decorator(func: Callable) -> Callable:
+        def wrapper(*args, **kwargs):
+            tracer = get_distributed_tracer()
+            operation_name = name or f"{func.__module__}.{func.__name__}"
+            
+            with tracer.trace_span(operation_name, operation_type):
+                return func(*args, **kwargs)
+        
+        async def async_wrapper(*args, **kwargs):
+            tracer = get_distributed_tracer()
+            operation_name = name or f"{func.__module__}.{func.__name__}"
+            
+            with tracer.trace_span(operation_name, operation_type):
+                return await func(*args, **kwargs)
+        
+        # Return appropriate wrapper based on function type
+        if asyncio.iscoroutinefunction(func):
+            return async_wrapper
+        else:
+            return wrapper
+    
+    return decorator
+
+
+# Convenience decorators for common operations
+def trace_brain_processing(func: Callable) -> Callable:
+    """Decorator for brain processing operations"""
+    return trace_operation(TraceOperationType.BRAIN_PROCESSING)(func)
+
+
+def trace_skill_execution(func: Callable) -> Callable:
+    """Decorator for skill execution operations"""
+    return trace_operation(TraceOperationType.SKILL_EXECUTION)(func)
+
+
+def trace_memory_access(func: Callable) -> Callable:
+    """Decorator for memory access operations"""
+    return trace_operation(TraceOperationType.MEMORY_ACCESS)(func)
+
+
+def trace_intent_recognition(func: Callable) -> Callable:
+    """Decorator for intent recognition operations"""
+    return trace_operation(TraceOperationType.INTENT_RECOGNITION)(func)
+
+
+def trace_reasoning_chain(func: Callable) -> Callable:
+    """Decorator for reasoning chain operations"""
+    return trace_operation(TraceOperationType.REASONING_CHAIN)(func)
+
+
+def trace_collaborative_processing(func: Callable) -> Callable:
+    """Decorator for collaborative processing operations"""
+    return trace_operation(TraceOperationType.COLLABORATIVE_PROCESSING)(func)
+
+
+def trace_multi_session(func: Callable) -> Callable:
+    """Decorator for multi-session operations"""
+    return trace_operation(TraceOperationType.MULTI_SESSION)(func)
