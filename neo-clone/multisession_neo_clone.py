@@ -1,0 +1,743 @@
+#!/usr/bin/env python3
+"""
+Neo-Clone Multi-Session Manager
+Inspired by Claude-Squad architecture for multi-instance AI agent management
+
+This module provides:
+- Multi-session management with isolation
+- Git worktree-based environment isolation
+- Background task execution
+- Real-time monitoring and status tracking
+- Unified TUI interface for session management
+"""
+
+import asyncio
+import json
+import os
+import sys
+import time
+import uuid
+import subprocess
+import threading
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Any, Tuple
+from dataclasses import dataclass, asdict
+from enum import Enum
+import logging
+
+# Add neo-clone to path for imports
+sys.path.insert(0, str(Path(__file__).parent))
+
+try:
+    from skills import SkillsManager
+    from openspec_skill import OpenSpecSkill
+    from tonl_skill import TonlSkill
+except ImportError as e:
+    print(f"Warning: Could not import Neo-Clone skills: {e}")
+    SkillsManager = None
+    OpenSpecSkill = None
+    TonlSkill = None
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+
+class SessionStatus(Enum):
+    """Session status enumeration"""
+    INITIALIZING = "initializing"
+    ACTIVE = "active"
+    IDLE = "idle"
+    BUSY = "busy"
+    COMPLETED = "completed"
+    ERROR = "error"
+    TERMINATED = "terminated"
+
+
+class SessionType(Enum):
+    """Session type enumeration"""
+    GENERAL = "general"
+    SPEC_DRIVEN = "spec_driven"
+    CODE_GENERATION = "code_generation"
+    DATA_ANALYSIS = "data_analysis"
+    WEB_RESEARCH = "web_research"
+    BACKGROUND = "background"
+
+
+@dataclass
+class SessionConfig:
+    """Configuration for a Neo-Clone session"""
+    session_id: str
+    name: str
+    session_type: SessionType
+    worktree_path: str
+    branch_name: str
+    created_at: datetime
+    status: SessionStatus
+    priority: int = 5  # 1-10, 1 is highest
+    auto_cleanup: bool = True
+    background: bool = False
+    isolation_level: str = "strict"  # strict, moderate, minimal
+    
+    # Task configuration
+    current_task: Optional[str] = None
+    task_progress: float = 0.0
+    task_result: Optional[Dict[str, Any]] = None
+    
+    # Resource limits
+    max_memory_mb: int = 2048
+    max_execution_time: int = 3600  # seconds
+    
+    # Communication
+    input_queue: Optional[List[str]] = None
+    output_buffer: Optional[List[str]] = None
+    
+    def __post_init__(self):
+        if self.input_queue is None:
+            self.input_queue = []
+        if self.output_buffer is None:
+            self.output_buffer = []
+
+
+@dataclass
+class SessionMetrics:
+    """Metrics for a session"""
+    session_id: str
+    start_time: datetime
+    last_activity: datetime
+    total_commands: int
+    successful_operations: int
+    failed_operations: int
+    memory_usage_mb: float
+    cpu_usage_percent: float
+    tasks_completed: int
+    errors_count: int
+    
+    @property
+    def success_rate(self) -> float:
+        """Calculate success rate"""
+        total = self.successful_operations + self.failed_operations
+        return (self.successful_operations / total * 100) if total > 0 else 0.0
+    
+    @property
+    def uptime_seconds(self) -> float:
+        """Calculate uptime in seconds"""
+        return (datetime.now() - self.start_time).total_seconds()
+
+
+class GitWorktreeManager:
+    """Manages git worktrees for session isolation"""
+    
+    def __init__(self, repo_root: str):
+        self.repo_root = Path(repo_root).resolve()
+        self.worktrees_dir = self.repo_root / ".neo-clone-worktrees"
+        self.worktrees_dir.mkdir(exist_ok=True)
+        logger.info(f"Git worktree manager initialized for repo: {self.repo_root}")
+    
+    def create_worktree(self, session_id: str, branch_name: str = None) -> Tuple[str, str]:
+        """Create a new git worktree for a session"""
+        try:
+            # Generate branch name if not provided
+            if not branch_name:
+                branch_name = f"neo-clone-session-{session_id}"
+            
+            worktree_path = self.worktrees_dir / session_id
+            
+            # Create branch first
+            result = subprocess.run(
+                ["git", "checkout", "-b", branch_name],
+                cwd=self.repo_root,
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode != 0 and "already exists" not in result.stderr:
+                logger.error(f"Failed to create branch {branch_name}: {result.stderr}")
+                raise Exception(f"Git branch creation failed: {result.stderr}")
+            
+            # Create worktree
+            result = subprocess.run(
+                ["git", "worktree", "add", str(worktree_path), branch_name],
+                cwd=self.repo_root,
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode != 0:
+                logger.error(f"Failed to create worktree: {result.stderr}")
+                raise Exception(f"Git worktree creation failed: {result.stderr}")
+            
+            logger.info(f"Created worktree for session {session_id} at {worktree_path}")
+            return str(worktree_path), branch_name
+            
+        except Exception as e:
+            logger.error(f"Error creating worktree for session {session_id}: {e}")
+            raise
+    
+    def remove_worktree(self, session_id: str) -> bool:
+        """Remove a git worktree"""
+        try:
+            worktree_path = self.worktrees_dir / session_id
+            
+            if not worktree_path.exists():
+                logger.warning(f"Worktree for session {session_id} does not exist")
+                return True
+            
+            # Remove worktree
+            result = subprocess.run(
+                ["git", "worktree", "remove", str(worktree_path)],
+                cwd=self.repo_root,
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode != 0:
+                logger.error(f"Failed to remove worktree: {result.stderr}")
+                return False
+            
+            logger.info(f"Removed worktree for session {session_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error removing worktree for session {session_id}: {e}")
+            return False
+    
+    def list_worktrees(self) -> List[str]:
+        """List all active worktrees"""
+        try:
+            result = subprocess.run(
+                ["git", "worktree", "list"],
+                cwd=self.repo_root,
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode != 0:
+                return []
+            
+            worktrees = []
+            for line in result.stdout.strip().split('\n'):
+                if line.strip():
+                    path = line.split()[0]
+                    if self.worktrees_dir in Path(path).parents:
+                        session_id = Path(path).name
+                        worktrees.append(session_id)
+            
+            return worktrees
+            
+        except Exception as e:
+            logger.error(f"Error listing worktrees: {e}")
+            return []
+
+
+class NeoCloneSession:
+    """Individual Neo-Clone session with isolation"""
+    
+    def __init__(self, config: SessionConfig, git_manager: GitWorktreeManager):
+        self.config = config
+        self.git_manager = git_manager
+        self.metrics = SessionMetrics(
+            session_id=config.session_id,
+            start_time=datetime.now(),
+            last_activity=datetime.now(),
+            total_commands=0,
+            successful_operations=0,
+            failed_operations=0,
+            memory_usage_mb=0.0,
+            cpu_usage_percent=0.0,
+            tasks_completed=0,
+            errors_count=0
+        )
+        
+        # Neo-Clone components
+        self.skills_manager = None
+        self.current_process = None
+        self.background_thread = None
+        self.running = False
+        
+        logger.info(f"Initialized Neo-Clone session {config.session_id}")
+    
+    async def initialize(self) -> bool:
+        """Initialize the session with Neo-Clone components"""
+        try:
+            self.config.status = SessionStatus.INITIALIZING
+            
+            # Create git worktree
+            worktree_path, branch_name = self.git_manager.create_worktree(
+                self.config.session_id,
+                self.config.branch_name
+            )
+            
+            # Update config with actual paths
+            self.config.worktree_path = worktree_path
+            self.config.branch_name = branch_name
+            
+            # Initialize Neo-Clone components if available
+            if SkillsManager is not None:
+                # Change to worktree directory
+                original_cwd = os.getcwd()
+                os.chdir(worktree_path)
+                
+                try:
+                    self.skills_manager = SkillsManager()
+                    logger.info(f"Skills manager initialized for session {self.config.session_id}")
+                finally:
+                    os.chdir(original_cwd)
+            
+            self.config.status = SessionStatus.ACTIVE
+            self.running = True
+            
+            logger.info(f"Session {self.config.session_id} initialized successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize session {self.config.session_id}: {e}")
+            self.config.status = SessionStatus.ERROR
+            return False
+    
+    async def execute_command(self, command: str, args: List[str] = None) -> Dict[str, Any]:
+        """Execute a command in the session"""
+        if not self.running:
+            return {"success": False, "error": "Session not running"}
+        
+        self.metrics.total_commands += 1
+        self.metrics.last_activity = datetime.now()
+        
+        try:
+            self.config.status = SessionStatus.BUSY
+            
+            # Change to worktree directory
+            original_cwd = os.getcwd()
+            os.chdir(self.config.worktree_path)
+            
+            result = {"success": False, "output": "", "error": ""}
+            
+            try:
+                if command == "skill":
+                    # Execute Neo-Clone skill
+                    if self.skills_manager and args:
+                        skill_result = await self._execute_skill(args)
+                        result.update(skill_result)
+                    else:
+                        result["error"] = "Skills manager not available or no args provided"
+                
+                elif command == "openspec":
+                    # Execute OpenSpec-NC operation
+                    if args:
+                        spec_result = await self._execute_openspec(args)
+                        result.update(spec_result)
+                    else:
+                        result["error"] = "OpenSpec requires arguments"
+                
+                elif command == "tonl":
+                    # Execute TONL-NC operation
+                    if args:
+                        tonl_result = await self._execute_tonl(args)
+                        result.update(tonl_result)
+                    else:
+                        result["error"] = "TONL requires arguments"
+                
+                else:
+                    # Execute shell command
+                    shell_result = await self._execute_shell_command(command, args)
+                    result.update(shell_result)
+                
+                if result["success"]:
+                    self.metrics.successful_operations += 1
+                else:
+                    self.metrics.failed_operations += 1
+                    self.metrics.errors_count += 1
+                
+            finally:
+                os.chdir(original_cwd)
+            
+            self.config.status = SessionStatus.ACTIVE
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error executing command in session {self.config.session_id}: {e}")
+            self.metrics.failed_operations += 1
+            self.metrics.errors_count += 1
+            self.config.status = SessionStatus.ERROR
+            return {"success": False, "error": str(e)}
+    
+    async def _execute_skill(self, args: List[str]) -> Dict[str, Any]:
+        """Execute a Neo-Clone skill"""
+        try:
+            if not self.skills_manager:
+                return {"success": False, "error": "Skills manager not initialized"}
+            
+            skill_name = args[0]
+            skill_args = args[1:] if len(args) > 1 else []
+            
+            # Get skill
+            skill = self.skills_manager.get_skill(skill_name)
+            if not skill:
+                return {"success": False, "error": f"Skill '{skill_name}' not found"}
+            
+            # Execute skill
+            if hasattr(skill, 'execute'):
+                result = await skill.execute(skill_args)
+                return {"success": True, "output": result}
+            else:
+                return {"success": False, "error": f"Skill '{skill_name}' does not support execution"}
+                
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    async def _execute_openspec(self, args: List[str]) -> Dict[str, Any]:
+        """Execute OpenSpec-NC operation"""
+        try:
+            # This would integrate with the OpenSpec-NC implementation
+            operation = args[0] if args else "help"
+            
+            if operation == "create":
+                return {"success": True, "output": "OpenSpec creation simulated"}
+            elif operation == "list":
+                return {"success": True, "output": "OpenSpec listing simulated"}
+            else:
+                return {"success": False, "error": f"Unknown OpenSpec operation: {operation}"}
+                
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    async def _execute_tonl(self, args: List[str]) -> Dict[str, Any]:
+        """Execute TONL-NC operation"""
+        try:
+            # This would integrate with the TONL-NC implementation
+            operation = args[0] if args else "help"
+            
+            if operation == "encode":
+                return {"success": True, "output": "TONL encoding simulated"}
+            elif operation == "decode":
+                return {"success": True, "output": "TONL decoding simulated"}
+            else:
+                return {"success": False, "error": f"Unknown TONL operation: {operation}"}
+                
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    async def _execute_shell_command(self, command: str, args: List[str] = None) -> Dict[str, Any]:
+        """Execute a shell command"""
+        try:
+            cmd = [command] + (args or [])
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=self.config.max_execution_time
+            )
+            
+            return {
+                "success": result.returncode == 0,
+                "output": result.stdout,
+                "error": result.stderr if result.stderr else None
+            }
+            
+        except subprocess.TimeoutExpired:
+            return {"success": False, "error": "Command execution timed out"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def get_status(self) -> Dict[str, Any]:
+        """Get current session status"""
+        return {
+            "config": asdict(self.config),
+            "metrics": asdict(self.metrics),
+            "running": self.running
+        }
+    
+    async def terminate(self) -> bool:
+        """Terminate the session"""
+        try:
+            self.running = False
+            self.config.status = SessionStatus.TERMINATED
+            
+            # Stop background processes
+            if self.current_process:
+                self.current_process.terminate()
+            
+            if self.background_thread and self.background_thread.is_alive():
+                self.background_thread.join(timeout=5)
+            
+            # Cleanup git worktree
+            self.git_manager.remove_worktree(self.config.session_id)
+            
+            logger.info(f"Session {self.config.session_id} terminated")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error terminating session {self.config.session_id}: {e}")
+            return False
+
+
+class MultiSessionManager:
+    """Main multi-session manager for Neo-Clone"""
+    
+    def __init__(self, repo_root: str = None):
+        if repo_root is None:
+            repo_root = Path(__file__).parent.parent
+        
+        self.repo_root = Path(repo_root).resolve()
+        self.git_manager = GitWorktreeManager(str(self.repo_root))
+        self.sessions: Dict[str, NeoCloneSession] = {}
+        self.session_configs: Dict[str, SessionConfig] = {}
+        
+        # Storage
+        self.sessions_dir = Path(__file__).parent / "data" / "sessions"
+        self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        
+        logger.info(f"Multi-session manager initialized for repo: {self.repo_root}")
+    
+    async def create_session(
+        self,
+        name: str,
+        session_type: SessionType = SessionType.GENERAL,
+        priority: int = 5,
+        background: bool = False,
+        **kwargs
+    ) -> str:
+        """Create a new Neo-Clone session"""
+        try:
+            session_id = str(uuid.uuid4())[:8]
+            branch_name = kwargs.get('branch_name', f"neo-clone-{session_type.value}-{session_id}")
+            
+            config = SessionConfig(
+                session_id=session_id,
+                name=name,
+                session_type=session_type,
+                worktree_path="",  # Will be set during initialization
+                branch_name=branch_name,
+                created_at=datetime.now(),
+                status=SessionStatus.INITIALIZING,
+                priority=priority,
+                background=background,
+                **kwargs
+            )
+            
+            # Create session
+            session = NeoCloneSession(config, self.git_manager)
+            
+            # Initialize session
+            if await session.initialize():
+                self.sessions[session_id] = session
+                self.session_configs[session_id] = config
+                
+                # Save configuration
+                await self._save_session_config(config)
+                
+                logger.info(f"Created session {session_id}: {name}")
+                return session_id
+            else:
+                logger.error(f"Failed to initialize session {session_id}")
+                raise Exception("Session initialization failed")
+                
+        except Exception as e:
+            logger.error(f"Error creating session: {e}")
+            raise
+    
+    async def get_session(self, session_id: str) -> Optional[NeoCloneSession]:
+        """Get a session by ID"""
+        return self.sessions.get(session_id)
+    
+    async def list_sessions(self) -> List[Dict[str, Any]]:
+        """List all active sessions"""
+        sessions_info = []
+        
+        for session_id, session in self.sessions.items():
+            status = session.get_status()
+            sessions_info.append({
+                "session_id": session_id,
+                "name": session.config.name,
+                "type": session.config.session_type.value,
+                "status": session.config.status.value,
+                "created_at": session.config.created_at.isoformat(),
+                "uptime_seconds": session.metrics.uptime_seconds,
+                "success_rate": session.metrics.success_rate,
+                "tasks_completed": session.metrics.tasks_completed
+            })
+        
+        return sessions_info
+    
+    async def execute_in_session(
+        self,
+        session_id: str,
+        command: str,
+        args: List[str] = None
+    ) -> Dict[str, Any]:
+        """Execute a command in a specific session"""
+        session = self.sessions.get(session_id)
+        if not session:
+            return {"success": False, "error": f"Session {session_id} not found"}
+        
+        return await session.execute_command(command, args)
+    
+    async def terminate_session(self, session_id: str) -> bool:
+        """Terminate a session"""
+        session = self.sessions.get(session_id)
+        if not session:
+            return False
+        
+        success = await session.terminate()
+        
+        if success:
+            # Remove from active sessions
+            self.sessions.pop(session_id, None)
+            self.session_configs.pop(session_id, None)
+            
+            # Remove configuration file
+            config_file = self.sessions_dir / f"{session_id}.json"
+            if config_file.exists():
+                config_file.unlink()
+        
+        return success
+    
+    async def cleanup_terminated_sessions(self) -> int:
+        """Clean up terminated sessions"""
+        terminated_count = 0
+        
+        for session_id in list(self.sessions.keys()):
+            session = self.sessions[session_id]
+            if session.config.status in [SessionStatus.COMPLETED, SessionStatus.ERROR, SessionStatus.TERMINATED]:
+                if await self.terminate_session(session_id):
+                    terminated_count += 1
+        
+        return terminated_count
+    
+    async def get_system_status(self) -> Dict[str, Any]:
+        """Get overall system status"""
+        total_sessions = len(self.sessions)
+        active_sessions = sum(1 for s in self.sessions.values() if s.config.status == SessionStatus.ACTIVE)
+        busy_sessions = sum(1 for s in self.sessions.values() if s.config.status == SessionStatus.BUSY)
+        
+        total_commands = sum(s.metrics.total_commands for s in self.sessions.values())
+        total_successful = sum(s.metrics.successful_operations for s in self.sessions.values())
+        total_failed = sum(s.metrics.failed_operations for s in self.sessions.values())
+        
+        return {
+            "total_sessions": total_sessions,
+            "active_sessions": active_sessions,
+            "busy_sessions": busy_sessions,
+            "total_commands": total_commands,
+            "success_rate": (total_successful / (total_successful + total_failed) * 100) if (total_successful + total_failed) > 0 else 0,
+            "git_worktrees": len(self.git_manager.list_worktrees()),
+            "repository_root": str(self.repo_root)
+        }
+    
+    async def _save_session_config(self, config: SessionConfig):
+        """Save session configuration to file"""
+        config_file = self.sessions_dir / f"{config.session_id}.json"
+        
+        config_data = asdict(config)
+        # Convert datetime to string for JSON serialization
+        config_data["created_at"] = config.created_at.isoformat()
+        
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f, indent=2)
+    
+    async def load_session_configs(self):
+        """Load existing session configurations"""
+        for config_file in self.sessions_dir.glob("*.json"):
+            try:
+                with open(config_file, 'r') as f:
+                    config_data = json.load(f)
+                
+                # Convert string back to datetime
+                config_data["created_at"] = datetime.fromisoformat(config_data["created_at"])
+                config_data["status"] = SessionStatus(config_data["status"])
+                config_data["session_type"] = SessionType(config_data["session_type"])
+                
+                config = SessionConfig(**config_data)
+                self.session_configs[config.session_id] = config
+                
+            except Exception as e:
+                logger.error(f"Error loading session config from {config_file}: {e}")
+
+
+# CLI Interface
+async def main():
+    """Main CLI interface"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Neo-Clone Multi-Session Manager")
+    parser.add_argument("command", choices=["create", "list", "execute", "terminate", "status", "cleanup"], help="Command to execute")
+    parser.add_argument("--session-id", help="Session ID for session-specific commands")
+    parser.add_argument("--name", help="Session name for create command")
+    parser.add_argument("--type", choices=[t.value for t in SessionType], default="general", help="Session type")
+    parser.add_argument("--background", action="store_true", help="Create background session")
+    parser.add_argument("--exec-command", help="Command to execute")
+    parser.add_argument("--exec-args", nargs="*", help="Arguments for command")
+    
+    args = parser.parse_args()
+    
+    manager = MultiSessionManager()
+    await manager.load_session_configs()
+    
+    try:
+        if args.command == "create":
+            if not args.name:
+                print("Error: --name is required for create command")
+                return
+            
+            session_id = await manager.create_session(
+                name=args.name,
+                session_type=SessionType(args.type),
+                background=args.background
+            )
+            print(f"Created session: {session_id}")
+        
+        elif args.command == "list":
+            sessions = await manager.list_sessions()
+            if sessions:
+                print("Active Sessions:")
+                for session in sessions:
+                    print(f"  {session['session_id']}: {session['name']} ({session['type']}) - {session['status']}")
+            else:
+                print("No active sessions")
+        
+        elif args.command == "execute":
+            if not args.session_id or not args.exec_command:
+                print("Error: --session-id and --exec-command are required for execute command")
+                return
+            
+            result = await manager.execute_in_session(
+                args.session_id,
+                args.exec_command,
+                args.exec_args or []
+            )
+            
+            if result["success"]:
+                print(f"Success: {result.get('output', '')}")
+            else:
+                print(f"Error: {result.get('error', '')}")
+        
+        elif args.command == "terminate":
+            if not args.session_id:
+                print("Error: --session-id is required for terminate command")
+                return
+            
+            success = await manager.terminate_session(args.session_id)
+            if success:
+                print(f"Session {args.session_id} terminated")
+            else:
+                print(f"Failed to terminate session {args.session_id}")
+        
+        elif args.command == "status":
+            status = await manager.get_system_status()
+            print("System Status:")
+            for key, value in status.items():
+                print(f"  {key}: {value}")
+        
+        elif args.command == "cleanup":
+            count = await manager.cleanup_terminated_sessions()
+            print(f"Cleaned up {count} terminated sessions")
+    
+    except Exception as e:
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

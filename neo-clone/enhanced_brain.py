@@ -44,6 +44,7 @@ class AdvancedReasoningStrategy(Enum):
     REFLEXION = "reflexion"                  # Self-reflection and improvement
     MULTI_PATH = "multi_path"                # Multiple reasoning paths
     COLLABORATIVE = "collaborative"          # Multi-agent collaboration
+    MULTI_SESSION = "multi_session"            # Multi-session parallel processing
     HYBRID = "hybrid"                        # Combination of strategies
 
 
@@ -428,7 +429,18 @@ class EnhancedBrain(BaseBrain):
         # Initialize collaborative agents
         if self.enable_collaboration:
             self._initialize_collaborative_agents()
-            
+        
+        # Initialize multi-session manager
+        self.multisession_manager = None
+        try:
+            from multisession_neo_clone import MultiSessionManager
+            self.multisession_manager = MultiSessionManager()
+            logger.info("Multi-session manager initialized in Enhanced Brain")
+        except ImportError as e:
+            logger.warning(f"Could not initialize multi-session manager: {e}")
+        except Exception as e:
+            logger.warning(f"Error initializing multi-session manager: {e}")
+             
         logger.info(f"Enhanced Brain initialized: strategy={reasoning_strategy.value}, collaboration={enable_collaboration}")
     
     def _initialize_reasoning_heuristics(self) -> Dict[str, callable]:
@@ -552,6 +564,10 @@ class EnhancedBrain(BaseBrain):
                 )
             elif strategy == AdvancedReasoningStrategy.MULTI_PATH:
                 reasoning_output = await self._multi_path_reasoning(
+                    user_input, intent_result, reasoning_trace
+                )
+            elif strategy == AdvancedReasoningStrategy.MULTI_SESSION:
+                reasoning_output = await self._multi_session_reasoning(
                     user_input, intent_result, reasoning_trace
                 )
             else:  # HYBRID
@@ -1879,6 +1895,257 @@ class EnhancedBrain(BaseBrain):
                 for i, s in enumerate(strategies) if i < len(results)
             },
             "recommendation": f"Hybrid solution combining {len(strategies)} complementary strategies"
+        }
+    
+    async def _multi_session_reasoning(
+        self,
+        user_input: str,
+        intent_result: Any,
+        reasoning_trace: MiniMaxReasoningTrace
+    ) -> Dict[str, Any]:
+        """Multi-session reasoning using parallel session execution"""
+        
+        if not self.multisession_manager:
+            # Fallback to hybrid reasoning if multi-session not available
+            return await self._hybrid_reasoning(user_input, intent_result, reasoning_trace)
+        
+        # Analyze task to determine session types needed
+        session_requirements = await self._analyze_session_requirements(user_input, intent_result)
+        
+        # Create specialized sessions
+        session_tasks = []
+        for req in session_requirements:
+            session_task = self.multisession_manager.create_session(
+                name=req["name"],
+                session_type=req["type"],
+                priority=req.get("priority", 5)
+            )
+            session_tasks.append(session_task)
+        
+        # Execute sessions in parallel
+        session_ids = await asyncio.gather(*session_tasks, return_exceptions=True)
+        
+        # Filter successful session creations
+        successful_sessions = []
+        for i, session_id in enumerate(session_ids):
+            if isinstance(session_id, Exception):
+                logger.warning(f"Failed to create session {i}: {session_id}")
+            else:
+                successful_sessions.append((session_id, session_requirements[i]))
+        
+        if not successful_sessions:
+            # Fallback if no sessions created
+            return await self._hybrid_reasoning(user_input, intent_result, reasoning_trace)
+        
+        # Execute tasks in parallel sessions
+        execution_tasks = []
+        for session_id, req in successful_sessions:
+            task = self._create_session_task(user_input, intent_result, req)
+            execution_task = self.multisession_manager.execute_in_session(
+                session_id, 
+                task["command"], 
+                task["args"]
+            )
+            execution_tasks.append(execution_task)
+        
+        # Wait for all executions
+        execution_results = await asyncio.gather(*execution_tasks, return_exceptions=True)
+        
+        # Process results
+        session_results = []
+        for i, result in enumerate(execution_results):
+            if isinstance(result, Exception):
+                logger.warning(f"Session execution failed: {result}")
+                session_results.append({
+                    "session_type": session_requirements[i]["type"].value,
+                    "success": False,
+                    "error": str(result)
+                })
+            else:
+                session_results.append({
+                    "session_type": session_requirements[i]["type"].value,
+                    "success": result.get("success", False),
+                    "output": result.get("output", ""),
+                    "error": result.get("error", "")
+                })
+        
+        # Synthesize results from multiple sessions
+        synthesized_result = await self._synthesize_session_results(
+            session_results, user_input, intent_result
+        )
+        
+        # Cleanup sessions
+        cleanup_tasks = [
+            self.multisession_manager.terminate_session(session_id)
+            for session_id, _ in successful_sessions
+        ]
+        await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+        
+        # Add to reasoning trace
+        reasoning_trace.add_step(
+            step_type="multi_session_reasoning",
+            description="Multi-session parallel reasoning completed",
+            input_data={
+                "user_input": user_input,
+                "sessions_created": len(successful_sessions),
+                "session_types": [req["type"].value for _, req in successful_sessions]
+            },
+            output_data={
+                "sessions_executed": len(session_results),
+                "successful_sessions": sum(1 for r in session_results if r["success"]),
+                "synthesis_confidence": synthesized_result.get("confidence", 0.5)
+            },
+            confidence=synthesized_result.get("confidence", 0.5)
+        )
+        
+        # Update metrics
+        self.advanced_metrics["multi_session_usage"] += 1
+        
+        return synthesized_result
+    
+    async def _analyze_session_requirements(
+        self, 
+        user_input: str, 
+        intent_result: Any
+    ) -> List[Dict[str, Any]]:
+        """Analyze task and determine required session types"""
+        from multisession_neo_clone import SessionType
+        
+        requirements = []
+        
+        # Analyze intent to determine session types
+        if intent_result.intent in [IntentType.CODE_GENERATION, IntentType.CODE_ANALYSIS]:
+            requirements.append({
+                "name": "Code Generation Session",
+                "type": SessionType.CODE_GENERATION,
+                "priority": 8
+            })
+        
+        if intent_result.intent in [IntentType.DATA_ANALYSIS, IntentType.DATA_INSPECTION]:
+            requirements.append({
+                "name": "Data Analysis Session", 
+                "type": SessionType.DATA_ANALYSIS,
+                "priority": 7
+            })
+        
+        if intent_result.intent == IntentType.WEB_SEARCH:
+            requirements.append({
+                "name": "Web Research Session",
+                "type": SessionType.WEB_RESEARCH,
+                "priority": 6
+            })
+        
+        # Add general session for complex tasks
+        if len(requirements) == 0 or self._analyze_task_complexity(user_input) > 0.7:
+            requirements.append({
+                "name": "General Processing Session",
+                "type": SessionType.GENERAL,
+                "priority": 5
+            })
+        
+        # Add background session for long-running tasks
+        if "monitor" in user_input.lower() or "continuous" in user_input.lower():
+            requirements.append({
+                "name": "Background Monitor Session",
+                "type": SessionType.BACKGROUND,
+                "priority": 3
+            })
+        
+        return requirements[:3]  # Limit to 3 sessions for efficiency
+    
+    def _create_session_task(
+        self, 
+        user_input: str, 
+        intent_result: Any, 
+        requirement: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Create task for specific session type"""
+        session_type = requirement["type"]
+        
+        if session_type.value == "code_generation":
+            return {
+                "command": "skill",
+                "args": ["code_generation", "analyze_and_generate", user_input]
+            }
+        elif session_type.value == "data_analysis":
+            return {
+                "command": "skill", 
+                "args": ["data_analysis", "analyze", user_input]
+            }
+        elif session_type.value == "web_research":
+            return {
+                "command": "skill",
+                "args": ["web_search", "research", user_input]
+            }
+        elif session_type.value == "spec_driven":
+            return {
+                "command": "openspec",
+                "args": ["create", "--title", "Task Spec", "--description", user_input]
+            }
+        else:  # general or background
+            return {
+                "command": "echo",
+                "args": [f"Processing: {user_input[:100]}..."]
+            }
+    
+    async def _synthesize_session_results(
+        self,
+        session_results: List[Dict[str, Any]],
+        user_input: str,
+        intent_result: Any
+    ) -> Dict[str, Any]:
+        """Synthesize results from multiple sessions"""
+        
+        successful_results = [r for r in session_results if r["success"]]
+        
+        if not successful_results:
+            return {
+                "strategy": "multi_session",
+                "description": "Multi-session execution failed",
+                "confidence": 0.1,
+                "error": "All sessions failed",
+                "session_results": session_results
+            }
+        
+        # Combine outputs from successful sessions
+        combined_outputs = []
+        for result in successful_results:
+            if result.get("output"):
+                combined_outputs.append(result["output"])
+        
+        # Calculate confidence based on success rate
+        success_rate = len(successful_results) / len(session_results)
+        base_confidence = success_rate * 0.8
+        
+        # Boost confidence for diverse session types
+        session_types = set(r["session_type"] for r in successful_results)
+        diversity_bonus = min(0.2, len(session_types) * 0.05)
+        
+        final_confidence = min(1.0, base_confidence + diversity_bonus)
+        
+        # Create synthesized response
+        if len(combined_outputs) == 1:
+            synthesized_output = combined_outputs[0]
+        else:
+            # Combine multiple outputs
+            synthesized_output = f"Multi-session analysis results:\n\n"
+            for i, output in enumerate(combined_outputs):
+                synthesized_output += f"Session {i+1} ({successful_results[i]['session_type']}):\n{output}\n\n"
+        
+        return {
+            "strategy": "multi_session",
+            "description": f"Multi-session reasoning with {len(successful_results)} successful sessions",
+            "confidence": final_confidence,
+            "synthesized_output": synthesized_output,
+            "session_results": session_results,
+            "success_rate": success_rate,
+            "session_diversity": len(session_types),
+            "reasoning_steps": [
+                f"Analyzed task requirements",
+                f"Created {len(session_results)} specialized sessions",
+                f"Executed parallel processing",
+                f"Synthesized {len(successful_results)} successful results"
+            ]
         }
     
     async def _enhanced_context_retrieval(

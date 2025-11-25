@@ -1,15 +1,26 @@
 """
-main.py - Neo-Clone Brain assistant entry point with Enhanced TUI interface (Phase 3)
+main.py - Neo-Clone Brain assistant entry point with Enhanced TUI interface (Phase 4)
 
 Usage:
     python main.py [--tui] [--cli] [--enhanced] [--config CONFIG] [--debug] [--theme THEME]
 
-Default mode is Enhanced TUI with Phase 3 features.
-Use --cli for the simple command-line mode.
-Use --tui for the classic TUI mode.
-Use --enhanced for the new enhanced TUI with all Phase 3 features.
+Default mode is Enhanced TUI with Phase 4 features.
+Use --cli for simple command-line mode.
+Use --tui for classic TUI mode.
+Use --enhanced for new enhanced TUI with all Phase 4 features.
 
-Phase 3 Features:
+Phase 4 Features:
+- Multi-Session Management (Claude-Squad inspired architecture)
+- Git Worktree Isolation for session separation
+- Parallel processing across multiple sessions
+- OpenSpec-NC spec-driven development
+- TONL-NC token optimization
+- Enhanced reasoning strategies (Multi-Session)
+- Real-time session monitoring and analytics
+- Background processing capabilities
+- Enterprise-grade session management
+
+Previous Phase 3 Features:
 - Persistent memory (JSON-based conversation history)
 - Enhanced logging system with analytics
 - 6 new LLM presets (creative, technical, analytical, etc.)
@@ -38,7 +49,7 @@ from plugin_system import get_plugin_manager
 def parse_args():
     p = argparse.ArgumentParser(
         prog="neo-clone", 
-        description="Neo-Clone AI Assistant v3.0 - Enhanced self-hosted terminal assistant with Phase 3 features"
+        description="Neo-Clone AI Assistant v4.0 - Enhanced self-hosted terminal assistant with Phase 4 Multi-Session features"
     )
     p.add_argument("--config", help="Path to config file (JSON)", default=None)
     p.add_argument("--debug", help="Enable debug logging", action="store_true")
@@ -161,10 +172,10 @@ async def cli_mode(args=None, cfg=None):
             minimax_agent = None
             print(f"[INFO] Using standard brain: {e2}")
     
-    print("Neo-Clone Enhanced CLI mode v3.0")
+    print("Neo-Clone Enhanced CLI mode v4.0")
     print("Type 'exit' to quit. Type 'help' for available commands.")
-    print("New Phase 3 commands: skills, memory, stats, presets, plugins")
-    print("Enhanced TUI: Run with --enhanced for the full interface")
+    print("Phase 4 commands: skills, memory, stats, presets, plugins, multisession, sessions")
+    print("Enhanced TUI: Run with --enhanced for the full Phase 4 interface")
     print("-" * 60)
     
     current_preset = "conversational"
@@ -187,11 +198,15 @@ async def cli_mode(args=None, cfg=None):
                 print("- stats          : Show usage statistics")
                 print("- presets        : List available LLM presets")
                 print("- plugins        : Show loaded plugins")
+                print("- multisession   : Show multi-session status")
+                print("- sessions       : List active sessions")
+                print("- new-session    : Create new session")
                 print("- help           : Show this help")
                 print("- enhanced       : Launch enhanced TUI")
                 print("- tui            : Launch classic TUI")
                 print("- exit/quit      : Exit the application")
                 print("\n💡 Regular conversation is also supported!")
+                print("🚀 New: Multi-session parallel processing available!")
                 continue
             
             if text.lower() == "skills":
@@ -243,6 +258,59 @@ async def cli_mode(args=None, cfg=None):
                     print(f"  {status} {name} v{version}")
                 continue
             
+            if text.lower() == "multisession":
+                try:
+                    from multisession_neo_clone import MultiSessionManager
+                    manager = MultiSessionManager()
+                    status = await manager.get_system_status()
+                    print(f"🚀 Multi-Session System Status:")
+                    print(f"  • Total sessions: {status.get('total_sessions', 0)}")
+                    print(f"  • Active sessions: {status.get('active_sessions', 0)}")
+                    print(f"  • Success rate: {status.get('success_rate', 0):.1f}%")
+                    print(f"  • Git worktrees: {status.get('git_worktrees', 0)}")
+                except Exception as e:
+                    print(f"❌ Multi-session system unavailable: {e}")
+                continue
+            
+            if text.lower() == "sessions":
+                try:
+                    from multisession_neo_clone import MultiSessionManager
+                    manager = MultiSessionManager()
+                    sessions = await manager.list_sessions()
+                    print(f"📋 Active Sessions ({len(sessions)}):")
+                    if sessions:
+                        for session in sessions:
+                            print(f"  • {session['session_id']}: {session['name']}")
+                            print(f"    Type: {session['type']}, Status: {session['status']}")
+                            print(f"    Uptime: {session['uptime_seconds']:.1f}s")
+                    else:
+                        print("  No active sessions")
+                except Exception as e:
+                    print(f"❌ Session listing unavailable: {e}")
+                continue
+            
+            if text.lower().startswith("new-session"):
+                try:
+                    from multisession_neo_clone import MultiSessionManager, SessionType
+                    manager = MultiSessionManager()
+                    
+                    # Parse session name
+                    parts = text.split(maxsplit=2)
+                    if len(parts) > 2:
+                        session_name = parts[2]
+                    else:
+                        session_name = f"CLI Session {len(await manager.list_sessions()) + 1}"
+                    
+                    session_id = await manager.create_session(
+                        name=session_name,
+                        session_type=SessionType.GENERAL
+                    )
+                    print(f"✅ Created session: {session_name}")
+                    print(f"   Session ID: {session_id}")
+                except Exception as e:
+                    print(f"❌ Failed to create session: {e}")
+                continue
+            
             if text.lower() == "enhanced":
                 print("Launching Enhanced TUI...")
                 os.execv(sys.executable, ['python', 'main.py', '--enhanced'] + (['--theme', args.theme] if args and args.theme else []))
@@ -263,10 +331,10 @@ async def cli_mode(args=None, cfg=None):
                     print(f"[MINIMAX] Reasoning confidence: {reasoning_trace.confidence_score:.2f}")
                 except Exception as e:
                     logger.warning(f"MiniMax Agent failed, falling back to brain: {e}")
-                    reply = await self._process_with_brain(brain, text)
+                    reply = await _process_with_brain(brain, text)
                     print(f"Neo> [FALLBACK] {reply}")
             else:
-                reply = await self._process_with_brain(brain, text)
+                reply = await _process_with_brain(brain, text)
                 print(f"Neo> {reply}")
 
             # Add to memory

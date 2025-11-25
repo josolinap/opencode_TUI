@@ -1957,6 +1957,26 @@ class SkillsManager:
         except Exception as e:
             logger.warning(f"Could not register TONLSkill: {e}")
 
+        # Register OpenSpec skill
+        try:
+            from openspec_skill import OpenSpecSkill
+            self.register_skill(OpenSpecSkill())
+            logger.info("Registered OpenSpec skill: openspec_manager")
+        except ImportError as e:
+            logger.warning(f"Could not import OpenSpecSkill: {e}")
+        except Exception as e:
+            logger.warning(f"Could not register OpenSpecSkill: {e}")
+
+        # Register Multi-Session skill
+        try:
+            from multisession_skill import MultiSessionSkill
+            self.register_skill(MultiSessionSkill())
+            logger.info("Registered Multi-Session skill: multisession_manager")
+        except ImportError as e:
+            logger.warning(f"Could not import MultiSessionSkill: {e}")
+        except Exception as e:
+            logger.warning(f"Could not register MultiSessionSkill: {e}")
+
         # Note: Other skills need interface updates to be compatible with current BaseSkill
         # autonomous_reasoning_skill, system_healer, autonomous_skills need refactoring
 
