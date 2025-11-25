@@ -119,11 +119,13 @@ class LRUCache:
         self.default_ttl = ttl
         self.cache: OrderedDict[str, CacheEntry] = OrderedDict()
         self.stats = CacheStats()
-        self.lock = threading.RLock()
+        self.lock = asyncio.Lock()  # Async-safe lock
+        # Add hash-based indexing for faster lookups
+        self.key_cache: Dict[str, str] = {}  # Maps parameter hashes to cache keys
     
-    def get(self, key: str) -> Optional[Any]:
-        """Get value from cache"""
-        with self.lock:
+    async def get(self, key: str) -> Optional[Any]:
+        """Get value from cache - OPTIMIZED async version"""
+        async with self.lock:
             if key not in self.cache:
                 self.stats.update_miss()
                 return None
@@ -143,9 +145,17 @@ class LRUCache:
             self.stats.update_hit()
             return entry.access()
     
-    def put(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
-        """Put value in cache"""
-        with self.lock:
+    def _generate_cache_key(self, tool_name: str, params: Dict[str, Any]) -> str:
+        """Generate optimized cache key from tool name and parameters"""
+        # Sort parameters for consistent key generation
+        sorted_params = json.dumps(params, sort_keys=True, ensure_ascii=False)
+        # Create hash for efficient indexing
+        param_hash = hashlib.sha256(sorted_params.encode()).hexdigest()[:16]
+        return f"{tool_name}:{param_hash}"
+    
+    async def put(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+        """Put value in cache - OPTIMIZED async version"""
+        async with self.lock:
             # Remove existing entry if present
             if key in self.cache:
                 old_entry = self.cache[key]

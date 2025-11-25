@@ -6,35 +6,130 @@ Integrates OpenSpec-NC workflow capabilities with Neo-Clone's skills framework
 import asyncio
 import json
 import uuid
+import time
+import logging
 from typing import Any, Dict, List, Optional, Union
 from datetime import datetime
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
+
 # Import OpenSpec engine
-from openspec_neo_clone import (
-    OpenSpecEngine, 
-    Specification, 
-    SpecChange, 
-    SpecRequirement, 
-    SpecDelta, 
-    ChangeType,
-    SpecStatus,
-    ImplementationTask,
-    TaskStatus
-)
+try:
+    from openspec_neo_clone import (
+        OpenSpecEngine, 
+        Specification, 
+        SpecChange, 
+        SpecRequirement, 
+        SpecDelta, 
+        ChangeType,
+        SpecStatus,
+        ImplementationTask,
+        TaskStatus
+    )
+    OPENSPEC_AVAILABLE = True
+except ImportError:
+    OPENSPEC_AVAILABLE = False
+    # Create fallback classes
+    class OpenSpecEngine:
+        def __init__(self):
+            pass
+    class Specification:
+        def __init__(self, *args, **kwargs):
+            pass
+    class SpecChange:
+        def __init__(self, *args, **kwargs):
+            pass
+    class SpecRequirement:
+        def __init__(self, *args, **kwargs):
+            pass
+    class SpecDelta:
+        def __init__(self, *args, **kwargs):
+            pass
+    class ChangeType:
+        def __init__(self, *args, **kwargs):
+            pass
+    class SpecStatus:
+        def __init__(self, *args, **kwargs):
+            pass
+    class ImplementationTask:
+        def __init__(self, *args, **kwargs):
+            pass
+    class TaskStatus:
+        def __init__(self, *args, **kwargs):
+            pass
+
+# Import Neo-Clone base classes (use fallback to avoid circular imports)
+try:
+    from data_models import SkillResult, SkillContext
+    DATA_MODELS_AVAILABLE = True
+except ImportError:
+    DATA_MODELS_AVAILABLE = False
+    # Fallback classes will be defined below
+
+# Define fallback classes at module level to ensure they're always available
+from abc import ABC, abstractmethod
+
+class BaseSkill(ABC):
+    def __init__(self):
+        self.metadata = SkillMetadata("unknown", "general", "Fallback skill")
+        self.execution_count = 0
+        self.success_count = 0
+        self.average_execution_time = 0.0
+    
+    @abstractmethod
+    async def _execute_async(self, context, **kwargs):
+        pass
+    
+    def get_parameters(self):
+        return {}
+
+class SkillResult:
+    def __init__(self, success, output, skill_name, execution_time, error_message=None, metadata=None):
+        self.success = success
+        self.output = output
+        self.skill_name = skill_name
+        self.execution_time = execution_time
+        self.error_message = error_message
+        self.metadata = metadata or {}
+
+class SkillMetadata:
+    def __init__(self, name, category, description, capabilities=None, parameters=None, examples=None):
+        self.name = name
+        self.category = category
+        self.description = description
+        self.capabilities = capabilities or []
+        self.parameters = parameters or {}
+        self.examples = examples or []
+
+class SkillCategory:
+    GENERAL = type('GENERAL', (), {'value': 'general'})()
+
+class SkillContext:
+    def __init__(self, user_input, intent, conversation_history):
+        self.user_input = user_input
+        self.intent = intent
+        self.conversation_history = conversation_history
 
 
-class OpenSpecSkill:
+class OpenSpecSkill(BaseSkill):
     """OpenSpec skill for Neo-Clone - provides spec-driven development capabilities"""
     
     def __init__(self):
+        # Initialize engine first
         self.engine = OpenSpecEngine()
         self.name = "OpenSpec Skill"
         self.description = "Spec-driven development workflow for Neo-Clone"
         self.version = "1.0.0"
         
-        # Skill capabilities
-        self.capabilities = [
+        # Call parent constructor
+        super().__init__()
+        
+        # Update metadata using fallback classes (avoiding dataclass immutability issues)
+        self.metadata.name = "openspec"
+        self.metadata.category = SkillCategory.GENERAL
+        self.metadata.description = "Spec-driven development workflow for Neo-Clone"
+        self.metadata.capabilities = [
             "create_specification",
             "list_specifications", 
             "create_change",
@@ -45,7 +140,95 @@ class OpenSpecSkill:
             "export_specification",
             "import_specification"
         ]
-    
+        
+        # Store parameters separately since SkillMetadata doesn't include parameters field
+        self.parameters = {
+            "title": {"type": "string", "description": "Specification title"},
+            "description": {"type": "string", "description": "Specification description"},
+            "spec_id": {"type": "string", "description": "Specification ID"},
+            "change_type": {"type": "string", "description": "Type of change to apply"}
+        }
+        
+        # Skill capabilities (backward compatibility)
+        self.capabilities = self.metadata.capabilities
+
+    def get_parameters(self):
+        """Get skill parameters"""
+        try:
+            from skills import SkillParameter, SkillParameterType
+            return {
+                "title": SkillParameter(
+                    name="title",
+                    param_type=SkillParameterType.STRING,
+                    required=False,
+                    description="Specification title"
+                ),
+                "description": SkillParameter(
+                    name="description",
+                    param_type=SkillParameterType.STRING,
+                    required=False,
+                    description="Specification description"
+                ),
+                "spec_id": SkillParameter(
+                    name="spec_id",
+                    param_type=SkillParameterType.STRING,
+                    required=False,
+                    description="Specification ID"
+                ),
+                "action": SkillParameter(
+                    name="action",
+                    param_type=SkillParameterType.STRING,
+                    required=False,
+                    description="Action to perform (create, list, change, etc.)"
+                )
+            }
+        except ImportError:
+            return {
+                "title": {"type": "string", "required": False, "description": "Specification title"},
+                "description": {"type": "string", "required": False, "description": "Specification description"},
+                "spec_id": {"type": "string", "required": False, "description": "Specification ID"},
+                "action": {"type": "string", "required": False, "description": "Action to perform"}
+            }
+
+    async def _execute_async(self, context: SkillContext, **kwargs) -> SkillResult:
+        """Execute OpenSpec skill operations"""
+        start_time = time.time()
+        
+        try:
+            action = kwargs.get("action", "list")
+            
+            if action == "create":
+                result = await self.create_specification(
+                    title=kwargs.get("title", "Untitled Specification"),
+                    description=kwargs.get("description", ""),
+                    author=kwargs.get("author", "Neo-Clone")
+                )
+            elif action == "list":
+                result = await self.list_specifications()
+            elif action == "get":
+                result = await self.get_specification(kwargs.get("spec_id"))
+            else:
+                result = {"error": f"Unknown action: {action}"}
+            
+            execution_time = time.time() - start_time
+            return SkillResult(
+                success=True,
+                output=result,
+                skill_name=self.metadata.name,
+                execution_time=execution_time,
+                metadata={"action": action}
+            )
+            
+        except Exception as e:
+            execution_time = time.time() - start_time
+            return SkillResult(
+                success=False,
+                output=None,
+                skill_name=self.metadata.name,
+                execution_time=execution_time,
+                error_message=str(e)
+            )
+
     async def create_specification(self, 
                                  title: str,
                                  description: str,

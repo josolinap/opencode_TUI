@@ -15,6 +15,7 @@ import time
 import uuid
 import hashlib
 import logging
+import aiohttp
 from typing import Dict, List, Optional, Any, Union, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -888,18 +889,15 @@ class SecureExecutor:
                                 'headers': dict(response.headers)
                             }
                 except ImportError:
-                    # Fallback to urllib for synchronous operation
-                    import urllib.request
-                    import urllib.error
-                    
-                    req = urllib.request.Request(url)
-                    with urllib.request.urlopen(req, timeout=timeout) as response:
-                        content = response.read().decode('utf-8')
-                        return {
-                            'content': content,
-                            'status_code': response.getcode(),
-                            'headers': dict(response.headers) if hasattr(response, 'headers') else {}
-                        }
+                    # Use async HTTP operations for better performance
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as response:
+                            content = await response.text()
+                            return {
+                                'content': content,
+                                'status_code': response.status,
+                                'headers': dict(response.headers) if response.headers else {}
+                            }
             except Exception as e:
                 raise Exception(f"Failed to fetch URL: {e}")
         

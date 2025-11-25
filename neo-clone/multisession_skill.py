@@ -14,36 +14,211 @@ from typing import Dict, List, Any, Optional
 # Add neo-clone to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
 
+# Import Neo-Clone base classes with fallbacks
 try:
-    from skills import BaseSkill, SkillResult
+    from skills import BaseSkill, SkillResult, SkillMetadata, SkillCategory, SkillParameter, SkillParameterType
+    from data_models import SkillContext
     from multisession_neo_clone import MultiSessionManager, SessionType, SessionStatus
 except ImportError as e:
     print(f"Warning: Could not import required modules: {e}")
     # Fallback classes for standalone operation
-    class BaseSkill:
-        def __init__(self, name: str, description: str):
+    from abc import ABC, abstractmethod
+    
+    class BaseSkill(ABC):
+        def __init__(self):
+            self.metadata = SkillMetadata("multisession", "general", "Multi-session management")
+            self.execution_count = 0
+            self.success_count = 0
+            self.average_execution_time = 0.0
+        
+        @abstractmethod
+        async def _execute_async(self, context, **kwargs):
+            pass
+        
+        def get_parameters(self):
+            return {}
+    
+    class SkillMetadata:
+        def __init__(self, name, category, description):
             self.name = name
+            self.category = category
             self.description = description
+            self.capabilities = []
+            self.parameters = {}
+            self.examples = []
+    
+    class SkillCategory:
+        GENERAL = "general"
+    
+    class SkillContext:
+        def __init__(self, user_input, intent, conversation_history):
+            self.user_input = user_input
+            self.intent = intent
+            self.conversation_history = conversation_history
     
     class SkillResult:
-        def __init__(self, success: bool, data: Any = None, message: str = "", error: str = ""):
+        def __init__(self, success: bool, output: Any = None, skill_name: str = "", execution_time: float = 0.0, error_message: str = "", metadata: dict = None):
             self.success = success
-            self.data = data
-            self.message = message
-            self.error = error
+            self.output = output
+            self.skill_name = skill_name
+            self.execution_time = execution_time
+            self.error_message = error_message
+            self.metadata = metadata or {}
+    
+    class SkillParameter:
+        def __init__(self, name, param_type, required=False, default=None, description=""):
+            self.name = name
+            self.param_type = param_type
+            self.required = required
+            self.default = default
+            self.description = description
+    
+    class SkillParameterType:
+        STRING = "string"
+        INTEGER = "integer"
+        BOOLEAN = "boolean"
+        DICT = "dict"
+    
+    # Fallback MultiSessionManager
+    class MultiSessionManager:
+        def __init__(self):
+            pass
+        async def create_session(self, *args, **kwargs):
+            return {"id": "fallback-session", "status": "created"}
+        async def list_sessions(self):
+            return []
+        async def get_session(self, session_id):
+            return None
+        async def terminate_session(self, session_id):
+            return {"success": True}
+    
+    class SessionType:
+        ISOLATED = "isolated"
+        SHARED = "shared"
+    
+    class SessionStatus:
+        ACTIVE = "active"
+        TERMINATED = "terminated"
 
 
 class MultiSessionSkill(BaseSkill):
     """Multi-session management skill for Neo-Clone"""
     
     def __init__(self):
-        super().__init__(
-            name="multisession",
-            description="Manages multiple Neo-Clone sessions with isolation and parallel execution"
-        )
+        super().__init__()
         self.manager = None
         self.initialized = False
-    
+        
+        # Update metadata
+        self.metadata.name = "multisession"
+        self.metadata.category = SkillCategory.GENERAL
+        self.metadata.description = "Manages multiple Neo-Clone sessions with isolation and parallel execution"
+        self.metadata.capabilities = [
+            "create_session",
+            "list_sessions", 
+            "get_session",
+            "terminate_session",
+            "session_isolation",
+            "parallel_execution"
+        ]
+        self.metadata.parameters = {
+            "action": {"type": "string", "description": "Action to perform"},
+            "session_id": {"type": "string", "description": "Session ID"},
+            "session_type": {"type": "string", "description": "Type of session"},
+            "config": {"type": "object", "description": "Session configuration"}
+        }
+        self.metadata.examples = [
+            "Create a new isolated session",
+            "List all active sessions",
+            "Terminate a specific session"
+        ]
+
+    def get_parameters(self):
+        """Get skill parameters"""
+        try:
+            return {
+                "action": SkillParameter(
+                    name="action",
+                    param_type=SkillParameterType.STRING,
+                    required=False,
+                    description="Action to perform (create, list, get, terminate)"
+                ),
+                "session_id": SkillParameter(
+                    name="session_id",
+                    param_type=SkillParameterType.STRING,
+                    required=False,
+                    description="Session ID"
+                ),
+                "session_type": SkillParameter(
+                    name="session_type",
+                    param_type=SkillParameterType.STRING,
+                    required=False,
+                    description="Type of session (isolated, shared)"
+                ),
+                "config": SkillParameter(
+                    name="config",
+                    param_type=SkillParameterType.DICT,
+                    required=False,
+                    description="Session configuration"
+                )
+            }
+        except:
+            return {
+                "action": {"type": "string", "required": False, "description": "Action to perform"},
+                "session_id": {"type": "string", "required": False, "description": "Session ID"},
+                "session_type": {"type": "string", "required": False, "description": "Session type"},
+                "config": {"type": "object", "required": False, "description": "Session configuration"}
+            }
+
+    async def _execute_async(self, context: SkillContext, **kwargs) -> SkillResult:
+        """Execute multi-session operations"""
+        start_time = time.time()
+        
+        try:
+            # Initialize if not already done
+            if not self.initialized:
+                init_result = await self.initialize()
+                if not init_result.success:
+                    return SkillResult(
+                        success=False,
+                        output=None,
+                        skill_name=self.metadata.name,
+                        execution_time=time.time() - start_time,
+                        error_message=init_result.error
+                    )
+            
+            action = kwargs.get("action", "list")
+            
+            if action == "create":
+                result = await self._create_session(kwargs)
+            elif action == "list":
+                result = await self._list_sessions()
+            elif action == "get":
+                result = await self._get_session(kwargs.get("session_id"))
+            elif action == "terminate":
+                result = await self._terminate_session(kwargs.get("session_id"))
+            else:
+                result = {"error": f"Unknown action: {action}"}
+            
+            execution_time = time.time() - start_time
+            return SkillResult(
+                success=result.get("success", True),
+                output=result,
+                skill_name=self.metadata.name,
+                execution_time=execution_time,
+                metadata={"action": action}
+            )
+            
+        except Exception as e:
+            execution_time = time.time() - start_time
+            return SkillResult(
+                success=False,
+                output=None,
+                skill_name=self.metadata.name,
+                execution_time=execution_time,
+                error_message=str(e)
+            )
+
     async def initialize(self):
         """Initialize the multi-session manager"""
         if not self.initialized:

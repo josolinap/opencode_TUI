@@ -342,7 +342,7 @@ class CollaborativeAgent:
 class UnifiedMemory:
     """Unified memory system with multiple storage types"""
 
-def __init__(self):
+    def __init__(self):
         self.short_term: Dict[str, Any] = {}
         self.working_memory: Dict[str, Any] = {}
         self.long_term: Dict[str, Any] = {}
@@ -1206,9 +1206,9 @@ class UnifiedBrain:
                     "model_selection": task_analysis,
                     "intelligent_routing": model_selection
                 }
-            }
+        }
 
-except Exception as e:
+        except Exception as e:
             response_time = time.time() - start_time
             self.performance_monitor.record_request(False, response_time)
             

@@ -1894,33 +1894,36 @@ class SkillsManager:
     """
     Unified skills management system that consolidates all skill functionality
     into a single, efficient interface.
-    """
+"""
 
     def __init__(self):
         self.skills: Dict[str, BaseSkill] = {}
+        self.skill_factories: Dict[str, callable] = {}  # Lazy loading factories
         self.skill_categories: Dict[SkillCategory, List[str]] = {}
         self.execution_history: List[Dict[str, Any]] = []
         self.performance_cache: Dict[str, Dict[str, Any]] = {}
         self.lock = threading.Lock()
 
-        # Initialize built-in skills
+        # Initialize built-in skills with lazy loading
         self._register_builtin_skills()
-        logger.info(f"Skills Manager initialized with {len(self.skills)} skills")
+        logger.info(f"Skills Manager initialized with {len(self.skill_factories)} skill factories (lazy loading enabled)")
 
     def _register_builtin_skills(self):
-        """Register all built-in skills"""
-        builtin_skills = [
-            CodeGenerationSkill(),
-            DataAnalysisSkill(),
-            TextAnalysisSkill(),
-            WebSearchSkill(),
-            MLTrainingSkill(),
-            OSINTSkill(),
-        ]
+        """Register all built-in skills with lazy loading for faster startup"""
+        # Lazy skill factories - only instantiate when needed
+        builtin_skill_factories = {
+            "codegenerationskill": lambda: CodeGenerationSkill(),
+            "dataanalysisskill": lambda: DataAnalysisSkill(),
+            "textanalysisskill": lambda: TextAnalysisSkill(),
+            "websearchskill": lambda: WebSearchSkill(),
+            "mltrainingskill": lambda: MLTrainingSkill(),
+            "osintskill": lambda: OSINTSkill(),
+        }
 
-        # Register basic skills
-        for skill in builtin_skills:
-            self.register_skill(skill)
+        # Register skill factories instead of instances
+        for skill_name, skill_factory in builtin_skill_factories.items():
+            self.register_skill_factory(skill_name, skill_factory)
+            logger.debug(f"Registered lazy skill factory: {skill_name}")
 
         # Import and register additional skills
         try:
@@ -2031,6 +2034,12 @@ class SkillsManager:
 
 
 
+    def register_skill_factory(self, skill_name: str, skill_factory: callable):
+        """Register a skill factory for lazy loading"""
+        with self.lock:
+            self.skill_factories[skill_name] = skill_factory
+            logger.debug(f"Registered skill factory: {skill_name}")
+
     def register_skill(self, skill: BaseSkill):
         """Register a new skill"""
         with self.lock:
@@ -2049,8 +2058,33 @@ class SkillsManager:
             logger.info(f"Registered skill: {skill_name} in category {category.value}")
 
     def get_skill(self, skill_name: str) -> Optional[BaseSkill]:
-        """Get a skill by name"""
-        return self.skills.get(skill_name)
+        """Get a skill by name with lazy loading"""
+        # Check if skill is already instantiated
+        if skill_name in self.skills:
+            return self.skills[skill_name]
+        
+        # Check if we have a factory for lazy loading
+        if skill_name in self.skill_factories:
+            try:
+                logger.info(f"Lazy loading skill: {skill_name}")
+                skill = self.skill_factories[skill_name]()
+                self.skills[skill_name] = skill  # Cache the instance
+                
+                # Update category mapping
+                if hasattr(skill, 'metadata') and hasattr(skill.metadata, 'category'):
+                    category = skill.metadata.category
+                    if category not in self.skill_categories:
+                        self.skill_categories[category] = []
+                    if skill_name not in self.skill_categories[category]:
+                        self.skill_categories[category].append(skill_name)
+                
+                logger.info(f"Successfully lazy loaded skill: {skill_name}")
+                return skill
+            except Exception as e:
+                logger.error(f"Failed to lazy load skill {skill_name}: {e}")
+                return None
+        
+        return None
 
     def get(self, skill_name: str) -> Optional[BaseSkill]:
         """Get a skill by name (compatibility method for brain.py)"""
