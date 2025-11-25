@@ -141,6 +141,23 @@ async def cli_mode(args=None, cfg=None):
     except Exception as e:
         logger.warning(f"Failed to initialize plugin system: {e}")
     
+    # Initialize MCP Protocol Integration Systems
+    try:
+        from tool_performance_monitor import performance_monitor
+        from tool_cache_system import tool_cache
+        from parallel_executor import parallel_executor
+        from resource_manager import resource_manager
+        
+        # Start MCP systems
+        import asyncio
+        asyncio.create_task(performance_monitor.start_monitoring())
+        asyncio.create_task(tool_cache.start())
+        asyncio.create_task(resource_manager.start())
+        
+        logger.info("MCP Protocol integration systems initialized")
+    except Exception as e:
+        logger.warning(f"Failed to initialize MCP systems: {e}")
+    
     # Initialize skills and MiniMax Agent with dynamic reasoning
     skills = SkillsManager()
 

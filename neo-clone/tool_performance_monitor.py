@@ -1,0 +1,485 @@
+"""
+Tool Performance Monitoring System for MCP Integration
+
+This module provides comprehensive performance monitoring for MCP tools
+including execution metrics, success rates, and optimization recommendations.
+
+Author: Neo-Clone Enhanced
+Version: 1.0.0
+"""
+
+import time
+import asyncio
+import logging
+from typing import Dict, List, Optional, Any, Tuple
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from enum import Enum
+import json
+from pathlib import Path
+
+# Configure logging
+logger = logging.getLogger(__name__)
+
+
+class PerformanceMetricType(Enum):
+    """Types of performance metrics"""
+    EXECUTION_TIME = "execution_time"
+    SUCCESS_RATE = "success_rate"
+    ERROR_RATE = "error_rate"
+    MEMORY_USAGE = "memory_usage"
+    CPU_USAGE = "cpu_usage"
+    NETWORK_LATENCY = "network_latency"
+    THROUGHPUT = "throughput"
+    CONCURRENCY = "concurrency"
+
+
+@dataclass
+class PerformanceMetric:
+    """Single performance metric entry"""
+    tool_id: str
+    metric_type: PerformanceMetricType
+    value: float
+    timestamp: datetime = field(default_factory=datetime.now)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary"""
+        return {
+            'tool_id': self.tool_id,
+            'metric_type': self.metric_type.value,
+            'value': self.value,
+            'timestamp': self.timestamp.isoformat(),
+            'metadata': self.metadata
+        }
+
+
+@dataclass
+class ToolPerformanceStats:
+    """Performance statistics for a specific tool"""
+    tool_id: str
+    total_executions: int = 0
+    successful_executions: int = 0
+    failed_executions: int = 0
+    total_execution_time: float = 0.0
+    min_execution_time: float = float('inf')
+    max_execution_time: float = 0.0
+    average_execution_time: float = 0.0
+    last_execution: Optional[datetime] = None
+    error_types: Dict[str, int] = field(default_factory=dict)
+    performance_history: List[PerformanceMetric] = field(default_factory=list)
+    
+    @property
+    def success_rate(self) -> float:
+        """Calculate success rate"""
+        if self.total_executions == 0:
+            return 0.0
+        return (self.successful_executions / self.total_executions) * 100
+    
+    @property
+    def error_rate(self) -> float:
+        """Calculate error rate"""
+        if self.total_executions == 0:
+            return 0.0
+        return (self.failed_executions / self.total_executions) * 100
+    
+    def update_execution(self, execution_time: float, success: bool, 
+                        error_message: Optional[str] = None) -> None:
+        """Update statistics with new execution"""
+        self.total_executions += 1
+        self.last_execution = datetime.now()
+        self.total_execution_time += execution_time
+        
+        if execution_time < self.min_execution_time:
+            self.min_execution_time = execution_time
+        if execution_time > self.max_execution_time:
+            self.max_execution_time = execution_time
+        
+        self.average_execution_time = self.total_execution_time / self.total_executions
+        
+        if success:
+            self.successful_executions += 1
+        else:
+            self.failed_executions += 1
+            if error_message:
+                error_type = error_message.split(':')[0] if ':' in error_message else error_message
+                self.error_types[error_type] = self.error_types.get(error_type, 0) + 1
+        
+        # Add to performance history
+        metric = PerformanceMetric(
+            tool_id=self.tool_id,
+            metric_type=PerformanceMetricType.EXECUTION_TIME,
+            value=execution_time,
+            metadata={'success': success, 'error_message': error_message}
+        )
+        self.performance_history.append(metric)
+        
+        # Keep history manageable (last 1000 entries)
+        if len(self.performance_history) > 1000:
+            self.performance_history = self.performance_history[-1000:]
+
+
+class ToolPerformanceMonitor:
+    """Comprehensive tool performance monitoring system"""
+    
+    def __init__(self, max_history_days: int = 30, enable_persistence: bool = True):
+        self.max_history_days = max_history_days
+        self.enable_persistence = enable_persistence
+        self.tool_stats: Dict[str, ToolPerformanceStats] = {}
+        self.global_metrics: List[PerformanceMetric] = []
+        self.monitoring_active = False
+        self.persistence_file = Path("data/logs/tool_performance.json")
+        
+        # Ensure data directory exists
+        self.persistence_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Load existing data if persistence is enabled
+        if self.enable_persistence and self.persistence_file.exists():
+            self._load_performance_data()
+    
+    def start_monitoring(self) -> None:
+        """Start performance monitoring"""
+        self.monitoring_active = True
+        logger.info("Tool performance monitoring started")
+    
+    def stop_monitoring(self) -> None:
+        """Stop performance monitoring and save data"""
+        self.monitoring_active = False
+        if self.enable_persistence:
+            self._save_performance_data()
+        logger.info("Tool performance monitoring stopped")
+    
+    def track_execution(self, tool_id: str, execution_time: float, 
+                       success: bool, error_message: Optional[str] = None,
+                       metadata: Optional[Dict[str, Any]] = None) -> None:
+        """Track tool execution performance"""
+        if not self.monitoring_active:
+            return
+        
+        # Initialize tool stats if needed
+        if tool_id not in self.tool_stats:
+            self.tool_stats[tool_id] = ToolPerformanceStats(tool_id=tool_id)
+        
+        # Update tool statistics
+        self.tool_stats[tool_id].update_execution(execution_time, success, error_message)
+        
+        # Add global metric
+        metric = PerformanceMetric(
+            tool_id=tool_id,
+            metric_type=PerformanceMetricType.EXECUTION_TIME,
+            value=execution_time,
+            metadata={
+                'success': success,
+                'error_message': error_message,
+                **(metadata or {})
+            }
+        )
+        self.global_metrics.append(metric)
+        
+        # Keep global metrics manageable
+        if len(self.global_metrics) > 10000:
+            self.global_metrics = self.global_metrics[-5000:]
+        
+        logger.debug(f"Tracked execution for {tool_id}: {execution_time:.3f}s, success={success}")
+    
+    def get_tool_stats(self, tool_id: str) -> Optional[ToolPerformanceStats]:
+        """Get performance statistics for a specific tool"""
+        return self.tool_stats.get(tool_id)
+    
+    def get_all_tool_stats(self) -> Dict[str, ToolPerformanceStats]:
+        """Get performance statistics for all tools"""
+        return self.tool_stats.copy()
+    
+    def get_top_performers(self, metric: str = 'success_rate', 
+                          limit: int = 10) -> List[Tuple[str, float]]:
+        """Get top performing tools by metric"""
+        if metric == 'success_rate':
+            performers = [(tool_id, float(stats.success_rate)) 
+                        for tool_id, stats in self.tool_stats.items()]
+        elif metric == 'average_execution_time':
+            performers = [(tool_id, float(stats.average_execution_time)) 
+                        for tool_id, stats in self.tool_stats.items()]
+        elif metric == 'total_executions':
+            performers = [(tool_id, float(stats.total_executions)) 
+                        for tool_id, stats in self.tool_stats.items()]
+        else:
+            return []
+        
+        # Sort and return top performers
+        if metric == 'average_execution_time':
+            performers.sort(key=lambda x: x[1])  # Lower is better
+        else:
+            performers.sort(key=lambda x: x[1], reverse=True)  # Higher is better
+        
+        return performers[:limit]
+    
+    def get_performance_trends(self, tool_id: str, 
+                            hours: int = 24) -> Dict[str, Any]:
+        """Get performance trends for a tool over time"""
+        if tool_id not in self.tool_stats:
+            return {}
+        
+        stats = self.tool_stats[tool_id]
+        cutoff_time = datetime.now() - timedelta(hours=hours)
+        
+        # Filter recent metrics
+        recent_metrics = [
+            metric for metric in stats.performance_history
+            if metric.timestamp >= cutoff_time
+        ]
+        
+        if not recent_metrics:
+            return {}
+        
+        # Calculate trends
+        execution_times = [m.value for m in recent_metrics]
+        successful_executions = [
+            m for m in recent_metrics 
+            if m.metadata.get('success', False)
+        ]
+        
+        return {
+            'tool_id': tool_id,
+            'timeframe_hours': hours,
+            'total_executions': len(recent_metrics),
+            'successful_executions': len(successful_executions),
+            'success_rate': (len(successful_executions) / len(recent_metrics)) * 100,
+            'avg_execution_time': sum(execution_times) / len(execution_times),
+            'min_execution_time': min(execution_times),
+            'max_execution_time': max(execution_times),
+            'execution_times': execution_times[-20:]  # Last 20 execution times
+        }
+    
+    def get_optimization_recommendations(self, tool_id: str) -> List[str]:
+        """Get optimization recommendations for a tool"""
+        if tool_id not in self.tool_stats:
+            return []
+        
+        stats = self.tool_stats[tool_id]
+        recommendations = []
+        
+        # Success rate recommendations
+        if stats.success_rate < 90:
+            recommendations.append(
+                f"Low success rate ({stats.success_rate:.1f}%). "
+                "Review error handling and input validation."
+            )
+        
+        # Execution time recommendations
+        if stats.average_execution_time > 5.0:
+            recommendations.append(
+                f"High average execution time ({stats.average_execution_time:.2f}s). "
+                "Consider optimization or caching."
+            )
+        
+        # Error pattern recommendations
+        if stats.error_types:
+            most_common_error = max(stats.error_types.items(), key=lambda x: x[1])
+            recommendations.append(
+                f"Most common error: '{most_common_error[0]}' ({most_common_error[1]} times). "
+                "Address this error pattern."
+            )
+        
+        # Usage recommendations
+        if stats.total_executions < 10:
+            recommendations.append(
+                "Low usage count. Consider if this tool is necessary or needs better documentation."
+            )
+        
+        return recommendations
+    
+    def get_system_overview(self) -> Dict[str, Any]:
+        """Get system-wide performance overview"""
+        if not self.tool_stats:
+            return {}
+        
+        total_executions = sum(stats.total_executions for stats in self.tool_stats.values())
+        total_successful = sum(stats.successful_executions for stats in self.tool_stats.values())
+        total_failed = sum(stats.failed_executions for stats in self.tool_stats.values())
+        
+        avg_execution_times = [
+            stats.average_execution_time for stats in self.tool_stats.values()
+            if stats.total_executions > 0
+        ]
+        
+        return {
+            'total_tools': len(self.tool_stats),
+            'total_executions': total_executions,
+            'successful_executions': total_successful,
+            'failed_executions': total_failed,
+            'overall_success_rate': (total_successful / total_executions * 100) if total_executions > 0 else 0,
+            'average_execution_time': sum(avg_execution_times) / len(avg_execution_times) if avg_execution_times else 0,
+            'tools_with_errors': len([stats for stats in self.tool_stats.values() if stats.failed_executions > 0]),
+            'monitoring_active': self.monitoring_active,
+            'data_retention_days': self.max_history_days
+        }
+    
+    def cleanup_old_data(self) -> None:
+        """Clean up old performance data"""
+        cutoff_date = datetime.now() - timedelta(days=self.max_history_days)
+        
+        # Clean up tool stats
+        for tool_id, stats in self.tool_stats.items():
+            stats.performance_history = [
+                metric for metric in stats.performance_history
+                if metric.timestamp >= cutoff_date
+            ]
+        
+        # Clean up global metrics
+        self.global_metrics = [
+            metric for metric in self.global_metrics
+            if metric.timestamp >= cutoff_date
+        ]
+        
+        logger.info(f"Cleaned up performance data older than {self.max_history_days} days")
+    
+    def _save_performance_data(self) -> None:
+        """Save performance data to file"""
+        try:
+            data = {
+                'tool_stats': {
+                    tool_id: {
+                        'tool_id': stats.tool_id,
+                        'total_executions': stats.total_executions,
+                        'successful_executions': stats.successful_executions,
+                        'failed_executions': stats.failed_executions,
+                        'total_execution_time': stats.total_execution_time,
+                        'min_execution_time': stats.min_execution_time,
+                        'max_execution_time': stats.max_execution_time,
+                        'average_execution_time': stats.average_execution_time,
+                        'last_execution': stats.last_execution.isoformat() if stats.last_execution else None,
+                        'error_types': stats.error_types,
+                        'performance_history': [m.to_dict() for m in stats.performance_history[-100:]]  # Last 100
+                    }
+                    for tool_id, stats in self.tool_stats.items()
+                },
+                'global_metrics': [m.to_dict() for m in self.global_metrics[-1000:]],  # Last 1000
+                'saved_at': datetime.now().isoformat()
+            }
+            
+            with open(self.persistence_file, 'w') as f:
+                json.dump(data, f, indent=2)
+            
+            logger.debug(f"Performance data saved to {self.persistence_file}")
+            
+        except Exception as e:
+            logger.error(f"Failed to save performance data: {e}")
+    
+    def _load_performance_data(self) -> None:
+        """Load performance data from file"""
+        try:
+            with open(self.persistence_file, 'r') as f:
+                data = json.load(f)
+            
+            # Load tool stats
+            for tool_id, stats_data in data.get('tool_stats', {}).items():
+                stats = ToolPerformanceStats(tool_id=tool_id)
+                stats.total_executions = stats_data.get('total_executions', 0)
+                stats.successful_executions = stats_data.get('successful_executions', 0)
+                stats.failed_executions = stats_data.get('failed_executions', 0)
+                stats.total_execution_time = stats_data.get('total_execution_time', 0.0)
+                stats.min_execution_time = stats_data.get('min_execution_time', float('inf'))
+                stats.max_execution_time = stats_data.get('max_execution_time', 0.0)
+                stats.average_execution_time = stats_data.get('average_execution_time', 0.0)
+                stats.error_types = stats_data.get('error_types', {})
+                
+                if stats_data.get('last_execution'):
+                    stats.last_execution = datetime.fromisoformat(stats_data['last_execution'])
+                
+                # Load performance history
+                for metric_data in stats_data.get('performance_history', []):
+                    metric = PerformanceMetric(
+                        tool_id=metric_data['tool_id'],
+                        metric_type=PerformanceMetricType(metric_data['metric_type']),
+                        value=metric_data['value'],
+                        timestamp=datetime.fromisoformat(metric_data['timestamp']),
+                        metadata=metric_data.get('metadata', {})
+                    )
+                    stats.performance_history.append(metric)
+                
+                self.tool_stats[tool_id] = stats
+            
+            # Load global metrics
+            for metric_data in data.get('global_metrics', []):
+                metric = PerformanceMetric(
+                    tool_id=metric_data['tool_id'],
+                    metric_type=PerformanceMetricType(metric_data['metric_type']),
+                    value=metric_data['value'],
+                    timestamp=datetime.fromisoformat(metric_data['timestamp']),
+                    metadata=metric_data.get('metadata', {})
+                )
+                self.global_metrics.append(metric)
+            
+            logger.debug(f"Performance data loaded from {self.persistence_file}")
+            
+        except Exception as e:
+            logger.error(f"Failed to load performance data: {e}")
+    
+    def export_report(self, format: str = 'json') -> str:
+        """Export performance report"""
+        report = {
+            'generated_at': datetime.now().isoformat(),
+            'system_overview': self.get_system_overview(),
+            'tool_statistics': {
+                tool_id: {
+                    'total_executions': stats.total_executions,
+                    'success_rate': stats.success_rate,
+                    'average_execution_time': stats.average_execution_time,
+                    'last_execution': stats.last_execution.isoformat() if stats.last_execution else None,
+                    'error_types': stats.error_types
+                }
+                for tool_id, stats in self.tool_stats.items()
+            },
+            'top_performers': {
+                'success_rate': self.get_top_performers('success_rate', 5),
+                'execution_time': self.get_top_performers('average_execution_time', 5),
+                'usage': self.get_top_performers('total_executions', 5)
+            }
+        }
+        
+        if format == 'json':
+            return json.dumps(report, indent=2)
+        elif format == 'text':
+            return self._format_text_report(report)
+        else:
+            raise ValueError(f"Unsupported format: {format}")
+    
+    def _format_text_report(self, report: Dict[str, Any]) -> str:
+        """Format performance report as text"""
+        lines = []
+        lines.append("TOOL PERFORMANCE REPORT")
+        lines.append("=" * 50)
+        lines.append(f"Generated: {report['generated_at']}")
+        lines.append("")
+        
+        # System overview
+        overview = report['system_overview']
+        lines.append("SYSTEM OVERVIEW")
+        lines.append("-" * 20)
+        lines.append(f"Total Tools: {overview.get('total_tools', 0)}")
+        lines.append(f"Total Executions: {overview.get('total_executions', 0)}")
+        lines.append(f"Overall Success Rate: {overview.get('overall_success_rate', 0):.1f}%")
+        lines.append(f"Average Execution Time: {overview.get('average_execution_time', 0):.3f}s")
+        lines.append("")
+        
+        # Top performers
+        lines.append("TOP PERFORMERS")
+        lines.append("-" * 20)
+        
+        top_success = report['top_performers']['success_rate'][:3]
+        lines.append("Highest Success Rate:")
+        for tool_id, rate in top_success:
+            lines.append(f"  {tool_id}: {rate:.1f}%")
+        lines.append("")
+        
+        top_speed = report['top_performers']['execution_time'][:3]
+        lines.append("Fastest Execution:")
+        for tool_id, time in top_speed:
+            lines.append(f"  {tool_id}: {time:.3f}s")
+        lines.append("")
+        
+        return "\n".join(lines)
+
+
+# Global performance monitor instance
+performance_monitor = ToolPerformanceMonitor()

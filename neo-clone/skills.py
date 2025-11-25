@@ -1946,6 +1946,16 @@ class SkillsManager:
             logger.warning(f"Could not import PlanningSkill: {e}")
         except Exception as e:
             logger.warning(f"Could not register PlanningSkill: {e}")
+        
+        # Register Enhanced Tool Skill with MCP integration
+        try:
+            from enhanced_tool_skill import EnhancedToolSkill
+            self.register_skill(EnhancedToolSkill())
+            logger.info("Registered enhanced tool skill with MCP integration")
+        except ImportError as e:
+            logger.warning(f"Could not import EnhancedToolSkill: {e}")
+        except Exception as e:
+            logger.warning(f"Could not register EnhancedToolSkill: {e}")
 
         # Register TONL skill
         try:
@@ -1976,6 +1986,16 @@ class SkillsManager:
             logger.warning(f"Could not import MultiSessionSkill: {e}")
         except Exception as e:
             logger.warning(f"Could not register MultiSessionSkill: {e}")
+
+        # Register Advanced Memory skill (Phase 5 Enhancement)
+        try:
+            from advanced_memory_skill import AdvancedMemorySkill
+            self.register_skill(AdvancedMemorySkill())
+            logger.info("Registered Advanced Memory skill: advanced_memory_manager")
+        except ImportError as e:
+            logger.warning(f"Could not import AdvancedMemorySkill: {e}")
+        except Exception as e:
+            logger.warning(f"Could not register AdvancedMemorySkill: {e}")
 
         # Note: Other skills need interface updates to be compatible with current BaseSkill
         # autonomous_reasoning_skill, system_healer, autonomous_skills need refactoring
