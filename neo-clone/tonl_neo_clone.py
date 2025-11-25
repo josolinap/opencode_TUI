@@ -1,0 +1,813 @@
+"""
+TONL-NC: Token-Optimized Notation Language for Neo-Clone
+A clean, optimized implementation of TONL format specifically designed for Neo-Clone skills
+
+Based on TONL by tonl-dev, but streamlined for AI/LLM integration
+"""
+
+import re
+import json
+import time
+from typing import Any, Dict, List, Optional, Union, Tuple
+from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
+
+
+class TONLDelimiter(Enum):
+    """Supported TONL delimiters"""
+    COMMA = ","
+    PIPE = "|"
+    TAB = "\t"
+    SEMICOLON = ";"
+
+
+class TONLType(Enum):
+    """TONL data types"""
+    STRING = "str"
+    INTEGER = "i32"
+    FLOAT = "f64"
+    BOOLEAN = "bool"
+    NULL = "null"
+    OBJECT = "obj"
+    ARRAY = "list"
+
+
+@dataclass
+class TONLEncodeOptions:
+    """Options for TONL encoding"""
+    delimiter: TONLDelimiter = TONLDelimiter.COMMA
+    include_types: bool = False
+    version: str = "1.0"
+    indent: int = 2
+    compact: bool = True
+    smart_encoding: bool = True
+
+
+@dataclass
+class TONLStats:
+    """Statistics for TONL operations"""
+    original_size: int
+    compressed_size: int
+    compression_ratio: float
+    token_estimate: int
+    processing_time: float
+
+
+class TONLError(Exception):
+    """TONL-specific errors"""
+    pass
+
+
+class TONLNeoClone:
+    """
+    Neo-Clone optimized TONL implementation
+    Focus on LLM token efficiency and clean integration
+    """
+    
+    def __init__(self):
+        self.delimiter = TONLDelimiter.COMMA
+        self.version = "1.0"
+        self._reset_state()
+    
+    def _reset_state(self):
+        """Reset internal state for new operations"""
+        self._seen_objects = set()
+        self._current_depth = 0
+        self._max_depth = 100
+    
+    def encode(self, data: Any, options: Optional[TONLEncodeOptions] = None) -> str:
+        """
+        Encode Python data to TONL format
+        
+        Args:
+            data: Python data to encode
+            options: Encoding options
+            
+        Returns:
+            TONL formatted string
+        """
+        start_time = time.time()
+        
+        if options is None:
+            options = TONLEncodeOptions()
+        
+        self._reset_state()
+        self.delimiter = options.delimiter
+        self.version = options.version
+        
+        # Build TONL lines
+        lines = []
+        
+        # Header
+        lines.append(f"#version {self.version}")
+        if self.delimiter != TONLDelimiter.COMMA:
+            delimiter_str = self.delimiter.value.replace("\t", "\\t")
+            lines.append(f"#delimiter {delimiter_str}")
+        
+        # Encode data
+        if isinstance(data, dict):
+            # Direct object encoding
+            encoded = self._encode_object_direct(data, options)
+            if encoded:
+                lines.append(encoded)
+        else:
+            # Wrap in root for non-dict data
+            encoded = self._encode_value(data, "root", options)
+            if encoded:
+                lines.append(encoded)
+        
+        result = "\n".join(lines)
+        
+        # Calculate stats
+        processing_time = time.time() - start_time
+        original_json = json.dumps(data, separators=(',', ':'))
+        stats = TONLStats(
+            original_size=len(original_json),
+            compressed_size=len(result),
+            compression_ratio=len(result) / len(original_json) if original_json else 1.0,
+            token_estimate=self._estimate_tokens(result),
+            processing_time=processing_time
+        )
+        
+        return result, stats
+    
+    def decode(self, tonl_text: str, strict: bool = False) -> Any:
+        """
+        Decode TONL format to Python data
+        
+        Args:
+            tonl_text: TONL formatted string
+            strict: Enable strict parsing mode
+            
+        Returns:
+            Python data
+        """
+        self._reset_state()
+        
+        lines = [line.rstrip('\r') for line in tonl_text.split('\n') if line.strip()]
+        
+        if not lines:
+            return {}
+        
+        # Parse headers
+        delimiter = None
+        data_start = 0
+        
+        for i, line in enumerate(lines):
+            if line.startswith('#'):
+                if line.startswith('#version '):
+                    self.version = line[9:].strip()
+                elif line.startswith('#delimiter '):
+                    delim_str = line[11:].strip()
+                    if delim_str == '\\t':
+                        delimiter = TONLDelimiter.TAB
+                    elif delim_str in [d.value for d in TONLDelimiter]:
+                        delimiter = TONLDelimiter(delim_str)
+                data_start = i + 1
+            else:
+                break
+        
+        if delimiter:
+            self.delimiter = delimiter
+        
+        # Parse content
+        content_lines = lines[data_start:]
+        if not content_lines:
+            return {}
+        
+        content = "\n".join(content_lines)
+        parsed = self._parse_content(content)
+        
+        # If we have a single root key and it was direct encoding, unwrap it
+        if len(parsed) == 1 and "root" in parsed:
+            return parsed["root"]
+        else:
+            return parsed
+    
+    def _encode_value(self, value: Any, key: str, options: TONLEncodeOptions) -> str:
+        """Encode a single value"""
+        if value is None:
+            return f"{key}: null"
+        
+        if isinstance(value, bool):
+            return f"{key}: {str(value).lower()}"
+        
+        if isinstance(value, (int, float)):
+            return f"{key}: {value}"
+        
+        if isinstance(value, str):
+            return f"{key}: {self._quote_string(value)}"
+        
+        if isinstance(value, list):
+            return self._encode_array(value, key, options)
+        
+        if isinstance(value, dict):
+            return self._encode_object(value, key, options)
+        
+        # Fallback
+        return f"{key}: {self._quote_string(str(value))}"
+    
+    def _encode_array(self, arr: List[Any], key: str, options: TONLEncodeOptions) -> str:
+        """Encode an array"""
+        if not arr:
+            return f"{key}[0]:"
+        
+        # Check if uniform object array (tabular format)
+        if arr and all(isinstance(item, dict) for item in arr if item):
+            return self._encode_tabular_array(arr, key, options)
+        
+        # Regular array
+        values = []
+        for item in arr:
+            if item is None:
+                values.append("null")
+            elif isinstance(item, bool):
+                values.append(str(item).lower())
+            elif isinstance(item, (int, float)):
+                values.append(str(item))
+            else:
+                values.append(self._quote_string(str(item)))
+        
+        return f"{key}[{len(arr)}]: {self.delimiter.value.join(values)}"
+    
+    def _encode_tabular_array(self, arr: List[Dict], key: str, options: TONLEncodeOptions) -> str:
+        """Encode array of objects in tabular format"""
+        if not arr:
+            return f"{key}[0]:"
+        
+        # Get all columns
+        columns = set()
+        for item in arr:
+            if isinstance(item, dict):
+                columns.update(item.keys())
+        columns = sorted(list(columns))
+        
+        # Build header
+        if options.include_types:
+            column_defs = []
+            for col in columns:
+                col_type = self._infer_type(arr[0].get(col) if arr else None)
+                column_defs.append(f"{col}:{col_type.value}")
+            header = f"{key}[{len(arr)}]{{{self.delimiter.value.join(column_defs)}}}:"
+        else:
+            header = f"{key}[{len(arr)}]{{{self.delimiter.value.join(columns)}}}:"
+        
+        lines = [header]
+        
+        # Add rows
+        for item in arr:
+            if not isinstance(item, dict):
+                continue
+            
+            row_values = []
+            for col in columns:
+                value = item.get(col)
+                if value is None:
+                    row_values.append("null")
+                elif isinstance(value, bool):
+                    row_values.append(str(value).lower())
+                elif isinstance(value, (int, float)):
+                    row_values.append(str(value))
+                else:
+                    row_values.append(self._quote_string(str(value)))
+            
+            lines.append("  " + self.delimiter.value.join(row_values))
+        
+        return "\n".join(lines)
+    
+    def _encode_object_direct(self, obj: Dict[str, Any], options: TONLEncodeOptions) -> str:
+        """Encode object directly without wrapper"""
+        if not obj:
+            return ""
+        
+        # Check for circular references
+        obj_id = id(obj)
+        if obj_id in self._seen_objects:
+            raise TONLError("Circular reference detected")
+        
+        self._seen_objects.add(obj_id)
+        self._current_depth += 1
+        
+        if self._current_depth > self._max_depth:
+            raise TONLError("Maximum nesting depth exceeded")
+        
+        try:
+            keys = sorted(obj.keys())
+            lines = []
+            
+            for prop_key in keys:
+                value = obj[prop_key]
+                if value is not None:
+                    encoded_value = self._encode_value(value, prop_key, options)
+                    lines.append(encoded_value)
+            
+            return "\n".join(lines)
+        
+        finally:
+            self._seen_objects.discard(obj_id)
+            self._current_depth -= 1
+    
+    def _encode_object(self, obj: Dict[str, Any], key: str, options: TONLEncodeOptions) -> str:
+        """Encode an object"""
+        if not obj:
+            return f"{key}:"
+        
+        # Check for circular references
+        obj_id = id(obj)
+        if obj_id in self._seen_objects:
+            raise TONLError(f"Circular reference detected at key: {key}")
+        
+        self._seen_objects.add(obj_id)
+        self._current_depth += 1
+        
+        if self._current_depth > self._max_depth:
+            raise TONLError(f"Maximum nesting depth exceeded at key: {key}")
+        
+        try:
+            keys = sorted(obj.keys())
+            
+            # Single property - simple format
+            if len(keys) == 1:
+                prop_key = keys[0]
+                value = obj[prop_key]
+                encoded_value = self._encode_value(value, prop_key, options)
+                return f"{key}:\n  {encoded_value}"
+            
+            # Multiple properties
+            lines = [f"{key}:"]
+            
+            for prop_key in keys:
+                value = obj[prop_key]
+                if value is not None:
+                    encoded_value = self._encode_value(value, prop_key, options)
+                    lines.append(f"  {encoded_value}")
+            
+            return "\n".join(lines)
+        
+        finally:
+            self._seen_objects.discard(obj_id)
+            self._current_depth -= 1
+    
+    def _parse_content(self, content: str) -> Any:
+        """Parse TONL content"""
+        lines = content.split('\n')
+        result = {}
+        i = 0
+        
+        while i < len(lines):
+            line = lines[i].rstrip()
+            if not line:
+                i += 1
+                continue
+            
+            # Parse object or array
+            if ':' in line:
+                key_part, value_part = line.split(':', 1)
+                key = key_part.strip()
+                
+                # Check for array notation
+                array_match = re.match(r'^(.+)\[(\d+)\](.*)$', key)
+                if array_match:
+                    base_key = array_match.group(1)
+                    array_size = int(array_match.group(2))
+                    rest = array_match.group(3).strip()
+                    
+                    if rest.startswith('{'):
+                        # Tabular array
+                        columns = [col.strip() for col in rest[1:-1].split(self.delimiter.value)]
+                        array_data = self._parse_tabular_array(lines, i + 1, array_size, columns)
+                        result[base_key] = array_data
+                        i += array_size + 1
+                        continue
+                    else:
+                        # Regular array
+                        array_data = self._parse_regular_array(lines, i + 1, array_size)
+                        result[base_key] = array_data
+                        i += array_size + 1
+                        continue
+                
+                # Check for object header
+                if value_part.strip() == '':
+                    # Multi-line object
+                    obj_data = self._parse_multiline_object(lines, i + 1)
+                    result[key] = obj_data['data']
+                    i += obj_data['lines_consumed'] + 1
+                    continue
+                else:
+                    # Single line value
+                    result[key] = self._parse_value(value_part.strip())
+            
+            i += 1
+        
+        return result
+    
+    def _parse_tabular_array(self, lines: List[str], start_idx: int, size: int, columns: List[str]) -> List[Dict]:
+        """Parse tabular array format"""
+        array_data = []
+        
+        for i in range(start_idx, min(start_idx + size, len(lines))):
+            line = lines[i].rstrip()
+            if not line:
+                continue
+            
+            # Check if this line is part of the array (should be indented)
+            if line[0].isspace():
+                values = [v.strip() for v in line.split(self.delimiter.value)]
+                if len(values) >= len(columns):
+                    row_data = {}
+                    for j, col in enumerate(columns):
+                        if j < len(values):
+                            row_data[col] = self._parse_value(values[j])
+                    array_data.append(row_data)
+            else:
+                # End of array
+                break
+        
+        return array_data
+    
+    def _parse_regular_array(self, lines: List[str], start_idx: int, size: int) -> List[Any]:
+        """Parse regular array format"""
+        array_data = []
+        
+        for i in range(start_idx, min(start_idx + size, len(lines))):
+            line = lines[i].strip()
+            if not line:
+                break
+            
+            # Parse array elements
+            if ':' in line:
+                key_part, value_part = line.split(':', 1)
+                if key_part.strip().startswith('['):
+                    # Array element
+                    value = self._parse_value(value_part.strip())
+                    array_data.append(value)
+        
+        return array_data
+    
+    def _parse_inline_array(self, value_str: str) -> List[Any]:
+        """Parse inline array from value string"""
+        if not value_str:
+            return []
+        
+        values = [v.strip() for v in value_str.split(self.delimiter.value)]
+        return [self._parse_value(v) for v in values]
+    
+    def _parse_multiline_object(self, lines: List[str], start_idx: int) -> Dict[str, Any]:
+        """Parse multi-line object"""
+        obj_data = {}
+        i = start_idx
+        base_indent = None
+        
+        while i < len(lines):
+            line = lines[i].rstrip()
+            if not line:
+                i += 1
+                continue
+            
+            # Check indentation
+            if base_indent is None:
+                base_indent = len(line) - len(line.lstrip())
+            
+            current_indent = len(line) - len(line.lstrip())
+            
+            # End of object
+            if current_indent < base_indent:
+                break
+            
+            # Parse property
+            if ':' in line:
+                key_part, value_part = line.split(':', 1)
+                key = key_part.strip()
+                
+                # Check for array notation in the key
+                array_match = re.match(r'^(.+)\[(\d+)\](.*)$', key)
+                if array_match:
+                    base_key = array_match.group(1)
+                    array_size = int(array_match.group(2))
+                    rest = array_match.group(3).strip()
+                    
+                    if value_part.strip() == '':
+                        # Multi-line array (tabular or regular)
+                        if rest.startswith('{'):
+                            # Tabular array
+                            columns = [col.strip() for col in rest[1:-1].split(self.delimiter.value)]
+                            array_data = self._parse_tabular_array(lines, i + 1, array_size, columns)
+                            obj_data[base_key] = array_data
+                            i += array_size + 1
+                            continue
+                        else:
+                            # Regular array
+                            array_data = self._parse_regular_array(lines, i + 1, array_size)
+                            obj_data[base_key] = array_data
+                            i += array_size + 1
+                            continue
+                    else:
+                        # Inline array - parse the value as array
+                        array_value = self._parse_inline_array(value_part.strip())
+                        obj_data[base_key] = array_value
+                        continue
+                
+                # Check if this is a nested object
+                if value_part.strip() == '':
+                    # Nested object
+                    nested_data = self._parse_multiline_object(lines, i + 1)
+                    obj_data[key] = nested_data['data']
+                    i += nested_data['lines_consumed'] + 1
+                    continue
+                else:
+                    # Single line value
+                    obj_data[key] = self._parse_value(value_part.strip())
+            
+            i += 1
+        
+        return {
+            'data': obj_data,
+            'lines_consumed': i - start_idx
+        }
+    
+    def _parse_value(self, value_str: str) -> Any:
+        """Parse a single value"""
+        if not value_str:
+            return None
+        
+        # Handle quoted strings
+        if value_str.startswith('"') and value_str.endswith('"'):
+            return value_str[1:-1].replace('\\"', '"').replace('\\n', '\n').replace('\\t', '\t')
+        
+        # Handle triple-quoted strings
+        if value_str.startswith('"""') and value_str.endswith('"""'):
+            return value_str[3:-3].replace('\\"', '"').replace('\\n', '\n').replace('\\t', '\t')
+        
+        # Handle null
+        if value_str.lower() == 'null':
+            return None
+        
+        # Handle booleans
+        if value_str.lower() == 'true':
+            return True
+        if value_str.lower() == 'false':
+            return False
+        
+        # Handle numbers
+        try:
+            if '.' in value_str or 'e' in value_str.lower():
+                return float(value_str)
+            else:
+                return int(value_str)
+        except ValueError:
+            pass
+        
+        # Handle arrays
+        if value_str.startswith('[') and value_str.endswith(']'):
+            array_content = value_str[1:-1]
+            if not array_content:
+                return []
+            return [self._parse_value(v.strip()) for v in array_content.split(self.delimiter.value)]
+        
+        # Default to string
+        return value_str
+    
+    def _quote_string(self, value: str) -> str:
+        """Quote string if needed"""
+        if not value:
+            return '""'
+        
+        # Check if quoting is needed
+        needs_quotes = (
+            self.delimiter.value in value or
+            '\n' in value or
+            ':' in value or
+            value.startswith('"') or
+            value.startswith('#') or
+            value.isspace()
+        )
+        
+        if not needs_quotes:
+            return value
+        
+        # Use triple quotes for complex strings
+        if '"""' in value or len(value) > 100:
+            escaped = value.replace('"', '\\"')
+            return f'"{escaped}"'
+        
+        escaped = value.replace('"', '\\"')
+        return f'"{escaped}"'
+    
+    def _infer_type(self, value: Any) -> TONLType:
+        """Infer TONL type from value"""
+        if value is None:
+            return TONLType.NULL
+        elif isinstance(value, bool):
+            return TONLType.BOOLEAN
+        elif isinstance(value, int):
+            return TONLType.INTEGER
+        elif isinstance(value, float):
+            return TONLType.FLOAT
+        elif isinstance(value, str):
+            return TONLType.STRING
+        elif isinstance(value, list):
+            return TONLType.ARRAY
+        elif isinstance(value, dict):
+            return TONLType.OBJECT
+        else:
+            return TONLType.STRING
+    
+    def _estimate_tokens(self, text: str) -> int:
+        """Estimate token count for LLM models"""
+        # Simple token estimation (rough approximation)
+        # Based on typical tokenizer behavior
+        words = len(text.split())
+        chars = len(text)
+        
+        # Rough estimation: ~4 chars per token for English text
+        # But TONL is more structured, so adjust
+        estimated = max(words, chars // 4)
+        
+        # Add overhead for structure
+        structural_overhead = text.count('\n') * 0.5 + text.count(':') * 0.25
+        
+        return int(estimated + structural_overhead)
+    
+    def get_stats(self, data: Any) -> Dict[str, Any]:
+        """Get statistics about data compression"""
+        tonl_result, stats = self.encode(data)
+        
+        return {
+            'original_bytes': stats.original_size,
+            'tonl_bytes': stats.compressed_size,
+            'compression_ratio': stats.compression_ratio,
+            'space_saved': stats.original_size - stats.compressed_size,
+            'space_saved_percent': (1 - stats.compression_ratio) * 100,
+            'estimated_tokens': stats.token_estimate,
+            'processing_time_ms': stats.processing_time * 1000
+        }
+    
+    def validate(self, tonl_text: str) -> Dict[str, Any]:
+        """Validate TONL format"""
+        errors = []
+        warnings = []
+        
+        try:
+            decoded = self.decode(tonl_text, strict=True)
+            
+            # Try re-encoding
+            reencoded, _ = self.encode(decoded)
+            
+            # Compare round-trip
+            if json.dumps(decoded, sort_keys=True) != json.dumps(self.decode(reencoded), sort_keys=True):
+                errors.append("Round-trip validation failed")
+            
+        except Exception as e:
+            errors.append(f"Parse error: {str(e)}")
+        
+        return {
+            'valid': len(errors) == 0,
+            'errors': errors,
+            'warnings': warnings
+        }
+
+
+# Convenience functions
+def encode_tonl(data: Any, options: Optional[TONLEncodeOptions] = None) -> Tuple[str, TONLStats]:
+    """Encode data to TONL format"""
+    tonl = TONLNeoClone()
+    return tonl.encode(data, options)
+
+
+def decode_tonl(tonl_text: str, strict: bool = False) -> Any:
+    """Decode TONL format to data"""
+    tonl = TONLNeoClone()
+    return tonl.decode(tonl_text, strict)
+
+
+def get_tonl_stats(data: Any) -> Dict[str, Any]:
+    """Get compression statistics"""
+    tonl = TONLNeoClone()
+    return tonl.get_stats(data)
+
+
+def validate_tonl(tonl_text: str) -> Dict[str, Any]:
+    """Validate TONL format"""
+    tonl = TONLNeoClone()
+    return tonl.validate(tonl_text)
+
+
+# CLI interface
+def main():
+    """Command line interface"""
+    import argparse
+    import sys
+    
+    parser = argparse.ArgumentParser(description='TONL-NC: Token-Optimized Notation Language for Neo-Clone')
+    parser.add_argument('command', choices=['encode', 'decode', 'stats', 'validate'], help='Command to execute')
+    parser.add_argument('input', help='Input file or JSON string')
+    parser.add_argument('-o', '--output', help='Output file')
+    parser.add_argument('-d', '--delimiter', choices=[',', '|', ';', '\\t'], default=',', help='Delimiter')
+    parser.add_argument('-t', '--types', action='store_true', help='Include type hints')
+    parser.add_argument('-c', '--compact', action='store_true', default=True, help='Compact encoding')
+    
+    args = parser.parse_args()
+    
+    try:
+        tonl = TONLNeoClone()
+        
+        # Set delimiter
+        if args.delimiter == '\\t':
+            tonl.delimiter = TONLDelimiter.TAB
+        elif args.delimiter == '|':
+            tonl.delimiter = TONLDelimiter.PIPE
+        elif args.delimiter == ';':
+            tonl.delimiter = TONLDelimiter.SEMICOLON
+        else:
+            tonl.delimiter = TONLDelimiter.COMMA
+        
+        if args.command == 'encode':
+            # Read input
+            if Path(args.input).exists():
+                with open(args.input, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+            else:
+                data = json.loads(args.input)
+            
+            # Encode
+            options = TONLEncodeOptions(
+                delimiter=tonl.delimiter,
+                include_types=args.types,
+                compact=args.compact
+            )
+            
+            result, stats = tonl.encode(data, options)
+            
+            # Output
+            if args.output:
+                with open(args.output, 'w', encoding='utf-8') as f:
+                    f.write(result)
+                print(f"Encoded to {args.output}")
+            else:
+                print(result)
+            
+            # Print stats
+            print(f"Compression: {stats.compression_ratio:.2f}x, Tokens: {stats.token_estimate}")
+        
+        elif args.command == 'decode':
+            # Read input
+            if Path(args.input).exists():
+                with open(args.input, 'r', encoding='utf-8') as f:
+                    tonl_text = f.read()
+            else:
+                tonl_text = args.input
+            
+            # Decode
+            result = tonl.decode(tonl_text)
+            
+            # Output
+            if args.output:
+                with open(args.output, 'w', encoding='utf-8') as f:
+                    json.dump(result, f, indent=2)
+                print(f"Decoded to {args.output}")
+            else:
+                print(json.dumps(result, indent=2))
+        
+        elif args.command == 'stats':
+            # Read input
+            if Path(args.input).exists():
+                with open(args.input, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+            else:
+                data = json.loads(args.input)
+            
+            # Get stats
+            stats = tonl.get_stats(data)
+            
+            print(f"Original size: {stats['original_bytes']} bytes")
+            print(f"TONL size: {stats['tonl_bytes']} bytes")
+            print(f"Compression: {stats['compression_ratio']:.2f}x")
+            print(f"Space saved: {stats['space_saved_percent']:.1f}%")
+            print(f"Estimated tokens: {stats['estimated_tokens']}")
+        
+        elif args.command == 'validate':
+            # Read input
+            if Path(args.input).exists():
+                with open(args.input, 'r', encoding='utf-8') as f:
+                    tonl_text = f.read()
+            else:
+                tonl_text = args.input
+            
+            # Validate
+            validation = tonl.validate(tonl_text)
+            
+            if validation['valid']:
+                print("+ Valid TONL format")
+            else:
+                print("- Invalid TONL format:")
+                for error in validation['errors']:
+                    print(f"  - {error}")
+    
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()

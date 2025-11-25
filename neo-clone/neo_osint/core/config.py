@@ -1,0 +1,220 @@
+"""
+Configuration management for Neo-OSINT
+"""
+
+import os
+from typing import Dict, List, Optional, Any
+from dataclasses import dataclass, field
+from pathlib import Path
+import json
+
+
+@dataclass
+class SearchEngineConfig:
+    """Configuration for a search engine"""
+    name: str
+    url: str
+    enabled: bool = True
+    priority: int = 1
+    timeout: int = 30
+    requires_auth: bool = False
+    auth_headers: Optional[Dict[str, str]] = None
+
+
+@dataclass
+class AIModelConfig:
+    """Configuration for AI models"""
+    provider: str  # openai, anthropic, google, ollama, local
+    model_name: str
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+    max_tokens: int = 4000
+    temperature: float = 0.3
+    enabled: bool = True
+
+
+@dataclass
+class SecurityConfig:
+    """Security and privacy settings"""
+    use_tor: bool = True
+    tor_socks_port: int = 9050
+    tor_control_port: int = 9051
+    tor_control_password: Optional[str] = None
+    rotate_identity: bool = True
+    rotation_interval: int = 5
+    max_request_rate: float = 1.0  # requests per second
+    user_agent_rotation: bool = True
+
+
+@dataclass
+class EvidenceConfig:
+    """Evidence collection and storage settings"""
+    evidence_dir: str = "evidence"
+    hash_algorithms: List[str] = field(default_factory=lambda: ["sha256", "md5"])
+    screenshot_enabled: bool = True
+    metadata_collection: bool = True
+    encryption_enabled: bool = False
+    retention_days: int = 365
+
+
+@dataclass
+class NeoOSINTConfig:
+    """Main configuration for Neo-OSINT"""
+    
+    # Core settings
+    workspace_dir: str = "neo_osint_workspace"
+    log_level: str = "INFO"
+    max_concurrent_requests: int = 10
+    request_timeout: int = 30
+    
+    # Component configurations
+    search_engines: List[SearchEngineConfig] = field(default_factory=list)
+    ai_models: List[AIModelConfig] = field(default_factory=list)
+    security: SecurityConfig = field(default_factory=SecurityConfig)
+    evidence: EvidenceConfig = field(default_factory=EvidenceConfig)
+    
+    # Neo-Clone integration
+    neo_clone_brain_path: Optional[str] = None
+    use_neo_clone_skills: bool = True
+    enable_reasoning_traces: bool = True
+    
+    @classmethod
+    def from_file(cls, config_path: str) -> "NeoOSINTConfig":
+        """Load configuration from JSON file"""
+        if not os.path.exists(config_path):
+            return cls()  # Return default config
+        
+        with open(config_path, 'r') as f:
+            data = json.load(f)
+        
+        # Convert dictionaries to dataclass instances
+        if 'search_engines' in data:
+            data['search_engines'] = [SearchEngineConfig(**se) for se in data['search_engines']]
+        if 'ai_models' in data:
+            data['ai_models'] = [AIModelConfig(**model) for model in data['ai_models']]
+        if 'security' in data:
+            data['security'] = SecurityConfig(**data['security'])
+        if 'evidence' in data:
+            data['evidence'] = EvidenceConfig(**data['evidence'])
+        
+        return cls(**data)
+    
+    def to_file(self, config_path: str) -> None:
+        """Save configuration to JSON file"""
+        os.makedirs(os.path.dirname(config_path), exist_ok=True)
+        
+        # Convert dataclasses to dictionaries
+        data = {
+            'workspace_dir': self.workspace_dir,
+            'log_level': self.log_level,
+            'max_concurrent_requests': self.max_concurrent_requests,
+            'request_timeout': self.request_timeout,
+            'search_engines': [se.__dict__ for se in self.search_engines],
+            'ai_models': [model.__dict__ for model in self.ai_models],
+            'security': self.security.__dict__,
+            'evidence': self.evidence.__dict__,
+            'neo_clone_brain_path': self.neo_clone_brain_path,
+            'use_neo_clone_skills': self.use_neo_clone_skills,
+            'enable_reasoning_traces': self.enable_reasoning_traces
+        }
+        
+        with open(config_path, 'w') as f:
+            json.dump(data, f, indent=2)
+    
+    def get_default_search_engines(self) -> List[SearchEngineConfig]:
+        """Get default dark web search engines"""
+        return [
+            SearchEngineConfig(
+                name="Ahmia",
+                url="http://juhanurmihxlp77nkq76byazcldy2hlmovfu2epvl5ankdibsot4csyd.onion/search/?q={query}",
+                priority=1
+            ),
+            SearchEngineConfig(
+                name="OnionLand",
+                url="http://3bbad7fauom4d6sgppalyqddsqbf5u5p56b5k5uk2zxsy3d6ey2jobad.onion/search?q={query}",
+                priority=2
+            ),
+            SearchEngineConfig(
+                name="DarkRunt",
+                url="http://darkhuntyla64h75a3re5e2l3367lqn7ltmdzpgmr6b4nbz3q2iaxrid.onion/search?q={query}",
+                priority=3
+            ),
+            SearchEngineConfig(
+                name="Torgle",
+                url="http://iy3544gmoeclh5de6gez2256v6pjh4omhpqdh2wpeeppjtvqmjhkfwad.onion/torgle/?query={query}",
+                priority=4
+            ),
+            SearchEngineConfig(
+                name="Amnesia",
+                url="http://amnesia7u5odx5xbwtpnqk3edybgud5bmiagu75bnqx2crntw5kry7ad.onion/search?query={query}",
+                priority=5
+            ),
+            # Additional enhanced search engines
+            SearchEngineConfig(
+                name="Kaizer",
+                url="http://kaizerwfvp5gxu6cppibp7jhcqptavq3iqef66wbxenh6a2fklibdvid.onion/search?q={query}",
+                priority=6
+            ),
+            SearchEngineConfig(
+                name="Anima",
+                url="http://anima4ffe27xmakwnseih3ic2y7y3l6e7fucwk4oerdn4odf7k74tbid.onion/search?q={query}",
+                priority=7
+            ),
+            SearchEngineConfig(
+                name="Tornado",
+                url="http://tornadoxn3viscgz647shlysdy7ea5zqzwda7hierekeuokh5eh5b3qd.onion/search?q={query}",
+                priority=8
+            ),
+            SearchEngineConfig(
+                name="TorNet",
+                url="http://tornetupfu7gcgidt33ftnungxzyfq2pygui5qdoyss34xbgx2qruzid.onion/search?q={query}",
+                priority=9
+            ),
+            SearchEngineConfig(
+                name="Torland",
+                url="http://torlbmqwtudkorme6prgfpmsnile7ug2zm4u3ejpcncxuhpu4k2j4kyd.onion/index.php?a=search&q={query}",
+                priority=10
+            ),
+            # Clear web search engines for context
+            SearchEngineConfig(
+                name="DuckDuckGo",
+                url="https://duckduckgo.com/html/?q={query}",
+                enabled=False,  # Disabled by default for dark web focus
+                priority=20
+            ),
+            SearchEngineConfig(
+                name="StartPage",
+                url="https://www.startpage.com/do/search?query={query}",
+                enabled=False,
+                priority=21
+            )
+        ]
+    
+    def get_default_ai_models(self) -> List[AIModelConfig]:
+        """Get default AI model configurations"""
+        return [
+            AIModelConfig(
+                provider="openai",
+                model_name="gpt-4",
+                api_key=os.getenv("OPENAI_API_KEY"),
+                enabled=True
+            ),
+            AIModelConfig(
+                provider="anthropic",
+                model_name="claude-3-5-sonnet-20241022",
+                api_key=os.getenv("ANTHROPIC_API_KEY"),
+                enabled=True
+            ),
+            AIModelConfig(
+                provider="google",
+                model_name="gemini-2.0-flash-exp",
+                api_key=os.getenv("GOOGLE_API_KEY"),
+                enabled=True
+            ),
+            AIModelConfig(
+                provider="ollama",
+                model_name="llama3.1:8b",
+                base_url="http://127.0.0.1:11434",
+                enabled=False  # Disabled by default
+            )
+        ]

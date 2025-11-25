@@ -1,0 +1,642 @@
+"""
+OpenSpec-NC: Spec-Driven Development for Neo-Clone
+A Neo-Clone optimized implementation of OpenSpec workflow for deterministic AI development
+
+Based on OpenSpec by Fission-AI, but integrated with Neo-Clone's skills framework
+"""
+
+import re
+import json
+import time
+import uuid
+from typing import Any, Dict, List, Optional, Union, Tuple
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+from datetime import datetime
+
+
+class SpecStatus(Enum):
+    """Specification status types"""
+    DRAFT = "draft"
+    PROPOSED = "proposed"
+    APPROVED = "approved"
+    IMPLEMENTED = "implemented"
+    ARCHIVED = "archived"
+
+
+class ChangeType(Enum):
+    """Change operation types"""
+    ADDED = "ADDED"
+    MODIFIED = "MODIFIED"
+    REMOVED = "REMOVED"
+
+
+class TaskStatus(Enum):
+    """Task status types"""
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    BLOCKED = "blocked"
+
+
+@dataclass
+class SpecRequirement:
+    """Individual specification requirement"""
+    id: str
+    title: str
+    description: str
+    acceptance_criteria: List[str] = field(default_factory=list)
+    priority: str = "medium"  # high, medium, low
+    tags: List[str] = field(default_factory=list)
+    scenarios: List[str] = field(default_factory=list)
+
+
+@dataclass
+class SpecDelta:
+    """Specification change delta"""
+    type: ChangeType
+    requirement_id: Optional[str] = None
+    requirement: Optional[SpecRequirement] = None
+    old_requirement: Optional[SpecRequirement] = None
+
+
+@dataclass
+class ImplementationTask:
+    """Implementation task derived from spec"""
+    id: str
+    title: str
+    description: str
+    requirement_ids: List[str] = field(default_factory=list)
+    scenarios: List[str] = field(default_factory=list)
+    status: TaskStatus = TaskStatus.PENDING
+    dependencies: List[str] = field(default_factory=list)
+    estimated_effort: Optional[str] = None
+
+
+@dataclass
+class SpecChange:
+    """A proposed change to specifications"""
+    id: str
+    title: str
+    description: str
+    author: str
+    created_at: datetime
+    status: SpecStatus = SpecStatus.DRAFT
+    deltas: List[SpecDelta] = field(default_factory=list)
+    tasks: List[ImplementationTask] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class Specification:
+    """A complete specification document"""
+    id: str
+    title: str
+    description: str
+    version: str = "1.0.0"
+    author: str = ""
+    created_at: datetime = field(default_factory=datetime.now)
+    updated_at: datetime = field(default_factory=datetime.now)
+    status: SpecStatus = SpecStatus.DRAFT
+    requirements: List[SpecRequirement] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+class OpenSpecEngine:
+    """Core OpenSpec engine for Neo-Clone"""
+    
+    def __init__(self, workspace_path: str = "openspec"):
+        self.workspace_path = Path(workspace_path)
+        self.specs_path = self.workspace_path / "specs"
+        self.changes_path = self.workspace_path / "changes"
+        self._ensure_workspace()
+    
+    def _ensure_workspace(self):
+        """Ensure workspace directories exist"""
+        self.specs_path.mkdir(parents=True, exist_ok=True)
+        self.changes_path.mkdir(parents=True, exist_ok=True)
+    
+    def _extract_spec_id_from_requirement_id(self, requirement_id: str) -> str:
+        """Extract specification ID from requirement ID"""
+        # Handle patterns like "test-spec-001-req-2" -> "test-spec-001"
+        parts = requirement_id.split('-')
+        if len(parts) >= 4 and parts[-2] == 'req':
+            # Remove the last 2 parts (req and number)
+            return '-'.join(parts[:-2])
+        else:
+            # Fallback to first part
+            return parts[0]
+    
+    def create_specification(self, spec: Specification) -> str:
+        """Create a new specification"""
+        spec_file = self.specs_path / f"{spec.id}.json"
+        
+        if spec_file.exists():
+            raise ValueError(f"Specification {spec.id} already exists")
+        
+        spec_data = self._serialize_specification(spec)
+        spec_file.write_text(json.dumps(spec_data, indent=2, default=str))
+        
+        return str(spec_file)
+    
+    def load_specification(self, spec_id: str) -> Specification:
+        """Load a specification by ID"""
+        spec_file = self.specs_path / f"{spec_id}.json"
+        
+        if not spec_file.exists():
+            raise ValueError(f"Specification {spec_id} not found")
+        
+        spec_data = json.loads(spec_file.read_text())
+        return self._deserialize_specification(spec_data)
+    
+    def update_specification(self, spec: Specification) -> str:
+        """Update an existing specification"""
+        spec.updated_at = datetime.now()
+        spec_file = self.specs_path / f"{spec.id}.json"
+        
+        spec_data = self._serialize_specification(spec)
+        spec_file.write_text(json.dumps(spec_data, indent=2, default=str))
+        
+        return str(spec_file)
+    
+    def create_change(self, change: SpecChange) -> str:
+        """Create a new change proposal"""
+        change_dir = self.changes_path / change.id
+        change_dir.mkdir(exist_ok=True)
+        
+        # Save change metadata
+        change_file = change_dir / "change.json"
+        change_data = self._serialize_change(change)
+        change_file.write_text(json.dumps(change_data, indent=2, default=str))
+        
+        # Create proposal.md
+        proposal_file = change_dir / "proposal.md"
+        proposal_content = self._generate_proposal_markdown(change)
+        proposal_file.write_text(proposal_content)
+        
+        # Create tasks.md
+        tasks_file = change_dir / "tasks.md"
+        tasks_content = self._generate_tasks_markdown(change)
+        tasks_file.write_text(tasks_content)
+        
+        return str(change_dir)
+    
+    def load_change(self, change_id: str) -> SpecChange:
+        """Load a change by ID"""
+        change_file = self.changes_path / change_id / "change.json"
+        
+        if not change_file.exists():
+            raise ValueError(f"Change {change_id} not found")
+        
+        change_data = json.loads(change_file.read_text())
+        return self._deserialize_change(change_data)
+    
+    def apply_change(self, change_id: str, author: str = "") -> bool:
+        """Apply a change to specifications"""
+        change = self.load_change(change_id)
+        
+        for delta in change.deltas:
+            if delta.type == ChangeType.ADDED and delta.requirement:
+                # Add to appropriate spec (extract spec ID from requirement ID)
+                spec_id = self._extract_spec_id_from_requirement_id(delta.requirement.id)
+                spec = self.load_specification(spec_id)
+                spec.requirements.append(delta.requirement)
+                self.update_specification(spec)
+            
+            elif delta.type == ChangeType.MODIFIED and delta.requirement:
+                # Update existing requirement
+                spec_id = self._extract_spec_id_from_requirement_id(delta.requirement.id)
+                spec = self.load_specification(spec_id)
+                for i, req in enumerate(spec.requirements):
+                    if req.id == delta.requirement.id:
+                        spec.requirements[i] = delta.requirement
+                        break
+                self.update_specification(spec)
+            
+            elif delta.type == ChangeType.REMOVED and delta.requirement_id:
+                # Remove requirement
+                spec_id = self._extract_spec_id_from_requirement_id(delta.requirement_id)
+                spec = self.load_specification(spec_id)
+                spec.requirements = [req for req in spec.requirements if req.id != delta.requirement_id]
+                self.update_specification(spec)
+        
+        # Update change status
+        change.status = SpecStatus.IMPLEMENTED
+        change.metadata["implemented_at"] = datetime.now().isoformat()
+        change.metadata["implemented_by"] = author
+        
+        change_file = self.changes_path / change_id / "change.json"
+        change_data = self._serialize_change(change)
+        change_file.write_text(json.dumps(change_data, indent=2, default=str))
+        
+        return True
+    
+    def list_specifications(self) -> List[Specification]:
+        """List all specifications"""
+        specs = []
+        for spec_file in self.specs_path.glob("*.json"):
+            spec_data = json.loads(spec_file.read_text())
+            specs.append(self._deserialize_specification(spec_data))
+        return specs
+    
+    def list_changes(self, status: Optional[SpecStatus] = None) -> List[SpecChange]:
+        """List all changes, optionally filtered by status"""
+        changes = []
+        for change_dir in self.changes_path.iterdir():
+            if change_dir.is_dir():
+                change_file = change_dir / "change.json"
+                if change_file.exists():
+                    change_data = json.loads(change_file.read_text())
+                    change = self._deserialize_change(change_data)
+                    if status is None or change.status == status:
+                        changes.append(change)
+        return changes
+    
+    def generate_tasks_from_spec(self, spec_id: str) -> List[ImplementationTask]:
+        """Generate implementation tasks from specification"""
+        spec = self.load_specification(spec_id)
+        tasks = []
+        
+        for req in spec.requirements:
+            task = ImplementationTask(
+                id=f"task-{uuid.uuid4().hex[:8]}",
+                title=f"Implement: {req.title}",
+                description=req.description,
+                requirement_ids=[req.id],
+                scenarios=req.scenarios,
+                estimated_effort=self._estimate_effort(req)
+            )
+            tasks.append(task)
+        
+        return tasks
+    
+    def validate_specification(self, spec: Specification) -> List[str]:
+        """Validate specification format and content"""
+        errors = []
+        
+        if not spec.id:
+            errors.append("Specification ID is required")
+        
+        if not spec.title:
+            errors.append("Specification title is required")
+        
+        if not spec.description:
+            errors.append("Specification description is required")
+        
+        # Validate requirements
+        req_ids = set()
+        for req in spec.requirements:
+            if not req.id:
+                errors.append("Requirement ID is required")
+            elif req.id in req_ids:
+                errors.append(f"Duplicate requirement ID: {req.id}")
+            else:
+                req_ids.add(req.id)
+            
+            if not req.title:
+                errors.append(f"Requirement title is required for {req.id}")
+            
+            if not req.description:
+                errors.append(f"Requirement description is required for {req.id}")
+        
+        return errors
+    
+    def _serialize_specification(self, spec: Specification) -> Dict[str, Any]:
+        """Serialize specification to dictionary"""
+        return {
+            "id": spec.id,
+            "title": spec.title,
+            "description": spec.description,
+            "version": spec.version,
+            "author": spec.author,
+            "created_at": spec.created_at.isoformat(),
+            "updated_at": spec.updated_at.isoformat(),
+            "status": spec.status.value,
+            "requirements": [
+                {
+                    "id": req.id,
+                    "title": req.title,
+                    "description": req.description,
+                    "acceptance_criteria": req.acceptance_criteria,
+                    "priority": req.priority,
+                    "tags": req.tags,
+                    "scenarios": req.scenarios
+                }
+                for req in spec.requirements
+            ],
+            "metadata": spec.metadata
+        }
+    
+    def _deserialize_specification(self, data: Dict[str, Any]) -> Specification:
+        """Deserialize specification from dictionary"""
+        return Specification(
+            id=data["id"],
+            title=data["title"],
+            description=data["description"],
+            version=data.get("version", "1.0.0"),
+            author=data.get("author", ""),
+            created_at=datetime.fromisoformat(data["created_at"]),
+            updated_at=datetime.fromisoformat(data["updated_at"]),
+            status=SpecStatus(data.get("status", "draft")),
+            requirements=[
+                SpecRequirement(
+                    id=req["id"],
+                    title=req["title"],
+                    description=req["description"],
+                    acceptance_criteria=req.get("acceptance_criteria", []),
+                    priority=req.get("priority", "medium"),
+                    tags=req.get("tags", []),
+                    scenarios=req.get("scenarios", [])
+                )
+                for req in data.get("requirements", [])
+            ],
+            metadata=data.get("metadata", {})
+        )
+    
+    def _serialize_change(self, change: SpecChange) -> Dict[str, Any]:
+        """Serialize change to dictionary"""
+        return {
+            "id": change.id,
+            "title": change.title,
+            "description": change.description,
+            "author": change.author,
+            "created_at": change.created_at.isoformat(),
+            "status": change.status.value,
+            "deltas": [
+                {
+                    "type": delta.type.value,
+                    "requirement_id": delta.requirement_id,
+                    "requirement": self._serialize_requirement(delta.requirement) if delta.requirement else None,
+                    "old_requirement": self._serialize_requirement(delta.old_requirement) if delta.old_requirement else None
+                }
+                for delta in change.deltas
+            ],
+            "tasks": [
+                {
+                    "id": task.id,
+                    "title": task.title,
+                    "description": task.description,
+                    "requirement_ids": task.requirement_ids,
+                    "scenarios": task.scenarios,
+                    "status": task.status.value,
+                    "dependencies": task.dependencies,
+                    "estimated_effort": task.estimated_effort
+                }
+                for task in change.tasks
+            ],
+            "metadata": change.metadata
+        }
+    
+    def _deserialize_change(self, data: Dict[str, Any]) -> SpecChange:
+        """Deserialize change from dictionary"""
+        return SpecChange(
+            id=data["id"],
+            title=data["title"],
+            description=data["description"],
+            author=data["author"],
+            created_at=datetime.fromisoformat(data["created_at"]),
+            status=SpecStatus(data.get("status", "draft")),
+            deltas=[
+                SpecDelta(
+                    type=ChangeType(delta["type"]),
+                    requirement_id=delta.get("requirement_id"),
+                    requirement=self._deserialize_requirement(delta["requirement"]) if delta.get("requirement") else None,
+                    old_requirement=self._deserialize_requirement(delta["old_requirement"]) if delta.get("old_requirement") else None
+                )
+                for delta in data.get("deltas", [])
+            ],
+            tasks=[
+                ImplementationTask(
+                    id=task["id"],
+                    title=task["title"],
+                    description=task["description"],
+                    requirement_ids=task.get("requirement_ids", []),
+                    scenarios=task.get("scenarios", []),
+                    status=TaskStatus(task.get("status", "pending")),
+                    dependencies=task.get("dependencies", []),
+                    estimated_effort=task.get("estimated_effort")
+                )
+                for task in data.get("tasks", [])
+            ],
+            metadata=data.get("metadata", {})
+        )
+    
+    def _serialize_requirement(self, req: Optional[SpecRequirement]) -> Optional[Dict[str, Any]]:
+        """Serialize requirement to dictionary"""
+        if not req:
+            return None
+        return {
+            "id": req.id,
+            "title": req.title,
+            "description": req.description,
+            "acceptance_criteria": req.acceptance_criteria,
+            "priority": req.priority,
+            "tags": req.tags,
+            "scenarios": req.scenarios
+        }
+    
+    def _deserialize_requirement(self, data: Optional[Dict[str, Any]]) -> Optional[SpecRequirement]:
+        """Deserialize requirement from dictionary"""
+        if not data:
+            return None
+        return SpecRequirement(
+            id=data["id"],
+            title=data["title"],
+            description=data["description"],
+            acceptance_criteria=data.get("acceptance_criteria", []),
+            priority=data.get("priority", "medium"),
+            tags=data.get("tags", []),
+            scenarios=data.get("scenarios", [])
+        )
+    
+    def _generate_proposal_markdown(self, change: SpecChange) -> str:
+        """Generate proposal markdown content"""
+        content = f"""# {change.title}
+
+**Author:** {change.author}  
+**Created:** {change.created_at.strftime('%Y-%m-%d %H:%M:%S')}  
+**Status:** {change.status.value}
+
+## Description
+
+{change.description}
+
+## Changes
+
+"""
+        
+        for delta in change.deltas:
+            if delta.type == ChangeType.ADDED:
+                content += f"### {delta.type.value}: {delta.requirement.title if delta.requirement else 'Unknown'}\n\n"
+                if delta.requirement:
+                    content += f"{delta.requirement.description}\n\n"
+                    if delta.requirement.acceptance_criteria:
+                        content += "**Acceptance Criteria:**\n"
+                        for ac in delta.requirement.acceptance_criteria:
+                            content += f"- {ac}\n"
+                        content += "\n"
+            
+            elif delta.type == ChangeType.MODIFIED:
+                content += f"### {delta.type.value}: {delta.requirement.title if delta.requirement else 'Unknown'}\n\n"
+                if delta.requirement:
+                    content += f"{delta.requirement.description}\n\n"
+            
+            elif delta.type == ChangeType.REMOVED:
+                content += f"### {delta.type.value}: {delta.requirement_id}\n\n"
+        
+        return content
+    
+    def _generate_tasks_markdown(self, change: SpecChange) -> str:
+        """Generate tasks markdown content"""
+        content = f"""# Implementation Tasks: {change.title}
+
+**Change ID:** {change.id}  
+**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+## Tasks
+
+"""
+        
+        for task in change.tasks:
+            content += f"""## {task.title}
+
+**ID:** {task.id}  
+**Status:** {task.status.value}  
+**Effort:** {task.estimated_effort or 'Not estimated'}
+
+{task.description}
+
+**Requirements:** {', '.join(task.requirement_ids)}
+
+"""
+            if task.scenarios:
+                content += "**Scenarios:**\n"
+                for scenario in task.scenarios:
+                    content += f"- {scenario}\n"
+                content += "\n"
+            
+            if task.dependencies:
+                content += f"**Dependencies:** {', '.join(task.dependencies)}\n\n"
+        
+        return content
+    
+    def _estimate_effort(self, req: SpecRequirement) -> str:
+        """Estimate implementation effort for a requirement"""
+        # Simple heuristic based on description length and complexity
+        desc_length = len(req.description)
+        ac_count = len(req.acceptance_criteria)
+        scenario_count = len(req.scenarios)
+        
+        complexity_score = desc_length / 100 + ac_count * 0.5 + scenario_count * 0.3
+        
+        if complexity_score < 2:
+            return "Small"
+        elif complexity_score < 5:
+            return "Medium"
+        elif complexity_score < 10:
+            return "Large"
+        else:
+            return "XLarge"
+
+
+# CLI interface for OpenSpec-NC
+def main():
+    """Command-line interface for OpenSpec-NC"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="OpenSpec-NC: Spec-Driven Development for Neo-Clone")
+    parser.add_argument("command", choices=["init", "create-spec", "list-specs", "create-change", "list-changes", "apply-change", "validate"])
+    parser.add_argument("--workspace", default="openspec", help="Workspace path")
+    parser.add_argument("--id", help="Specification/Change ID")
+    parser.add_argument("--title", help="Title")
+    parser.add_argument("--description", help="Description")
+    parser.add_argument("--author", default="", help="Author")
+    parser.add_argument("--file", help="Input file (JSON)")
+    
+    args = parser.parse_args()
+    
+    engine = OpenSpecEngine(args.workspace)
+    
+    if args.command == "init":
+        print(f"OpenSpec workspace initialized at: {engine.workspace_path}")
+    
+    elif args.command == "create-spec":
+        if not args.title or not args.description:
+            print("Error: --title and --description required")
+            return
+        
+        spec = Specification(
+            id=args.id or f"spec-{uuid.uuid4().hex[:8]}",
+            title=args.title,
+            description=args.description,
+            author=args.author
+        )
+        
+        errors = engine.validate_specification(spec)
+        if errors:
+            print("Validation errors:")
+            for error in errors:
+                print(f"  - {error}")
+            return
+        
+        file_path = engine.create_specification(spec)
+        print(f"Specification created: {file_path}")
+    
+    elif args.command == "list-specs":
+        specs = engine.list_specifications()
+        for spec in specs:
+            print(f"{spec.id}: {spec.title} ({spec.status.value})")
+    
+    elif args.command == "create-change":
+        if not args.title or not args.description:
+            print("Error: --title and --description required")
+            return
+        
+        change = SpecChange(
+            id=args.id or f"change-{uuid.uuid4().hex[:8]}",
+            title=args.title,
+            description=args.description,
+            author=args.author,
+            created_at=datetime.now()
+        )
+        
+        dir_path = engine.create_change(change)
+        print(f"Change created: {dir_path}")
+    
+    elif args.command == "list-changes":
+        changes = engine.list_changes()
+        for change in changes:
+            print(f"{change.id}: {change.title} ({change.status.value})")
+    
+    elif args.command == "apply-change":
+        if not args.id:
+            print("Error: --id required for change")
+            return
+        
+        success = engine.apply_change(args.id, args.author)
+        if success:
+            print(f"Change {args.id} applied successfully")
+        else:
+            print(f"Failed to apply change {args.id}")
+    
+    elif args.command == "validate":
+        if not args.id:
+            print("Error: --id required for specification")
+            return
+        
+        try:
+            spec = engine.load_specification(args.id)
+            errors = engine.validate_specification(spec)
+            if errors:
+                print("Validation errors:")
+                for error in errors:
+                    print(f"  - {error}")
+            else:
+                print(f"Specification {args.id} is valid")
+        except ValueError as e:
+            print(f"Error: {e}")
+
+
+if __name__ == "__main__":
+    main()
