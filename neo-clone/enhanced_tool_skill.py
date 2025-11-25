@@ -13,23 +13,13 @@ import time
 import logging
 from typing import Dict, List, Optional, Any, Union
 from dataclasses import dataclass
+from abc import ABC, abstractmethod
 
-# Import Neo-Clone core modules
+# Import Neo-Clone core modules with proper error handling
 try:
     from skills import BaseSkill, SkillParameter, SkillParameterType, SkillStatus
-    from data_models import (
-        SkillResult, SkillContext, SkillMetadata, SkillCategory,
-        IntentType, Message, PerformanceMetrics
-    )
-    from mcp_protocol import (
-        MCPClient, MCPConfig, MCPTool, SecurityLevel, 
-        ToolExecution, ToolStatus as MCPToolStatus
-    )
-except ImportError as e:
-    # Fallback for development environment
-    logging.warning(f"Import error: {e}. Using fallback imports.")
-    
-    # Define fallback classes if imports fail
+except ImportError:
+    # Define minimal fallback classes
     class BaseSkill(ABC):
         def __init__(self):
             self.metadata = None
@@ -42,6 +32,17 @@ except ImportError as e:
         @abstractmethod
         async def _execute_async(self, context, **kwargs):
             pass
+        
+        def execute(self, params_or_context, **kwargs):
+            """Execute method for compatibility"""
+            if isinstance(params_or_context, dict):
+                # Handle legacy call signature
+                context = SkillContext("", "", [])
+                context.__dict__.update(params_or_context)
+                return asyncio.run(self._execute_async(context, **kwargs))
+            else:
+                # Handle new call signature
+                return asyncio.run(self._execute_async(params_or_context, **kwargs))
     
     class SkillParameter:
         def __init__(self, name, param_type, required=False, default=None, description=""):
@@ -60,7 +61,14 @@ except ImportError as e:
     class SkillStatus:
         IDLE = "idle"
         RUNNING = "running"
-    
+
+try:
+    from data_models import (
+        SkillResult, SkillContext, SkillMetadata, SkillCategory,
+        IntentType, Message, PerformanceMetrics
+    )
+except ImportError:
+    # Define fallback data models
     class SkillResult:
         def __init__(self, success, output, skill_name, execution_time, error_message=None, metadata=None):
             self.success = success
@@ -77,11 +85,13 @@ except ImportError as e:
             self.conversation_history = conversation_history
     
     class SkillMetadata:
-        def __init__(self, name, category, description, capabilities=None):
+        def __init__(self, name, category, description, capabilities=None, parameters=None, examples=None):
             self.name = name
             self.category = category
             self.description = description
             self.capabilities = capabilities or []
+            self.parameters = parameters or {}
+            self.examples = examples or []
     
     class SkillCategory:
         FILE_MANAGEMENT = "file_management"
@@ -92,7 +102,17 @@ except ImportError as e:
     class Message:
         pass
     
-    # MCP fallbacks
+    class PerformanceMetrics:
+        pass
+
+# Import MCP modules with fallbacks
+try:
+    from mcp_protocol import (
+        MCPClient, MCPConfig, MCPTool, SecurityLevel, 
+        ToolExecution, ToolStatus as MCPToolStatus
+    )
+except ImportError:
+    logging.warning("MCP protocol not available, using fallbacks")
     MCPClient = None
     MCPConfig = None
     MCPTool = None

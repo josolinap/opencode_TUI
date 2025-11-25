@@ -1,0 +1,848 @@
+"""
+Neo-Clone API Gateway
+====================
+
+This module implements a comprehensive API Gateway for the Neo-Clone microservices
+architecture, providing service routing, load balancing, authentication, rate limiting,
+and request transformation capabilities.
+
+Author: Neo-Clone Enhanced
+Version: 2.0.0 (API Gateway)
+"""
+
+import asyncio
+import json
+import logging
+import time
+import uuid
+import hashlib
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field, asdict
+from typing import Dict, List, Any, Optional, Union, Callable, Tuple
+from datetime import datetime, timedelta
+from enum import Enum
+from collections import defaultdict, deque
+import re
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+class LoadBalancingStrategy(Enum):
+    """Load balancing strategies"""
+    ROUND_ROBIN = "round_robin"
+    LEAST_CONNECTIONS = "least_connections"
+    WEIGHTED_ROUND_ROBIN = "weighted_round_robin"
+    RANDOM = "random"
+    IP_HASH = "ip_hash"
+
+
+class AuthenticationType(Enum):
+    """Authentication types"""
+    NONE = "none"
+    API_KEY = "api_key"
+    JWT = "jwt"
+    OAUTH2 = "oauth2"
+    BASIC_AUTH = "basic_auth"
+
+
+class RateLimitType(Enum):
+    """Rate limiting types"""
+    FIXED_WINDOW = "fixed_window"
+    SLIDING_WINDOW = "sliding_window"
+    TOKEN_BUCKET = "token_bucket"
+
+
+@dataclass
+class Route:
+    """API route definition"""
+    path: str
+    service_name: str
+    method: str = "GET"
+    service_path: str = "/"
+    auth_required: bool = False
+    auth_type: AuthenticationType = AuthenticationType.NONE
+    rate_limit: Optional[int] = None  # requests per minute
+    timeout: float = 30.0
+    retry_attempts: int = 3
+    circuit_breaker_threshold: int = 5
+    cache_ttl: int = 300  # seconds
+    transform_request: Optional[Callable] = None
+    transform_response: Optional[Callable] = None
+    
+    def matches(self, path: str, method: str) -> bool:
+        """Check if route matches request"""
+        # Convert route path to regex pattern
+        pattern = self.path.replace('*', '.*')
+        return re.match(pattern, path) and self.method.upper() == method.upper()
+
+
+@dataclass
+class ServiceInstance:
+    """Service instance for load balancing"""
+    service_name: str
+    instance_id: str
+    host: str = "localhost"
+    port: int = 8000
+    weight: int = 1
+    healthy: bool = True
+    active_connections: int = 0
+    total_requests: int = 0
+    failed_requests: int = 0
+    avg_response_time: float = 0.0
+    last_health_check: Optional[datetime] = None
+    
+    @property
+    def url(self) -> str:
+        """Get service URL"""
+        return f"http://{self.host}:{self.port}"
+    
+    @property
+    def success_rate(self) -> float:
+        """Calculate success rate"""
+        if self.total_requests == 0:
+            return 1.0
+        return (self.total_requests - self.failed_requests) / self.total_requests
+
+
+@dataclass
+class RateLimitEntry:
+    """Rate limit entry"""
+    client_id: str
+    requests: deque = field(default_factory=deque)
+    tokens: float = 100.0  # For token bucket
+    last_refill: datetime = field(default_factory=datetime.now)
+    
+    def is_allowed(self, limit: int, window: int, limit_type: RateLimitType) -> bool:
+        """Check if request is allowed"""
+        now = datetime.now()
+        
+        if limit_type == RateLimitType.FIXED_WINDOW:
+            # Remove old requests outside window
+            cutoff = now - timedelta(seconds=window)
+            while self.requests and self.requests[0] < cutoff:
+                self.requests.popleft()
+            
+            # Check if under limit
+            if len(self.requests) < limit:
+                self.requests.append(now)
+                return True
+            return False
+            
+        elif limit_type == RateLimitType.SLIDING_WINDOW:
+            # Similar to fixed window but more precise
+            cutoff = now - timedelta(seconds=window)
+            while self.requests and self.requests[0] < cutoff:
+                self.requests.popleft()
+            
+            if len(self.requests) < limit:
+                self.requests.append(now)
+                return True
+            return False
+            
+        elif limit_type == RateLimitType.TOKEN_BUCKET:
+            # Refill tokens based on time passed
+            time_passed = (now - self.last_refill).total_seconds()
+            tokens_to_add = time_passed * (limit / window)  # tokens per second
+            self.tokens = min(limit, self.tokens + tokens_to_add)
+            self.last_refill = now
+            
+            # Check if has tokens
+            if self.tokens >= 1.0:
+                self.tokens -= 1.0
+                return True
+            return False
+        
+        return True
+
+
+@dataclass
+class CircuitBreakerState:
+    """Circuit breaker state"""
+    service_name: str
+    failure_count: int = 0
+    last_failure_time: Optional[datetime] = None
+    state: str = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
+    timeout: float = 60.0  # seconds to wait before trying again
+    failure_threshold: int = 5
+    success_threshold: int = 3  # successes needed to close circuit
+    
+    def is_allowed(self) -> bool:
+        """Check if request is allowed through circuit breaker"""
+        now = datetime.now()
+        
+        if self.state == "CLOSED":
+            return True
+        elif self.state == "OPEN":
+            # Check if timeout has passed
+            if (self.last_failure_time and 
+                (now - self.last_failure_time).total_seconds() > self.timeout):
+                self.state = "HALF_OPEN"
+                return True
+            return False
+        elif self.state == "HALF_OPEN":
+            return True
+        
+        return False
+    
+    def record_success(self):
+        """Record successful request"""
+        if self.state == "HALF_OPEN":
+            self.failure_count = 0
+            self.state = "CLOSED"
+    
+    def record_failure(self):
+        """Record failed request"""
+        self.failure_count += 1
+        self.last_failure_time = datetime.now()
+        
+        if self.state == "CLOSED" and self.failure_count >= self.failure_threshold:
+            self.state = "OPEN"
+        elif self.state == "HALF_OPEN":
+            self.state = "OPEN"
+
+
+class LoadBalancer:
+    """Load balancer for service instances"""
+    
+    def __init__(self, strategy: LoadBalancingStrategy = LoadBalancingStrategy.ROUND_ROBIN):
+        self.strategy = strategy
+        self.round_robin_counters: Dict[str, int] = defaultdict(int)
+    
+    def select_instance(self, instances: List[ServiceInstance], 
+                     client_ip: Optional[str] = None) -> Optional[ServiceInstance]:
+        """Select service instance based on strategy"""
+        if not instances:
+            return None
+        
+        # Filter healthy instances
+        healthy_instances = [inst for inst in instances if inst.healthy]
+        if not healthy_instances:
+            return None
+        
+        if self.strategy == LoadBalancingStrategy.ROUND_ROBIN:
+            return self._round_robin(healthy_instances)
+        elif self.strategy == LoadBalancingStrategy.LEAST_CONNECTIONS:
+            return self._least_connections(healthy_instances)
+        elif self.strategy == LoadBalancingStrategy.WEIGHTED_ROUND_ROBIN:
+            return self._weighted_round_robin(healthy_instances)
+        elif self.strategy == LoadBalancingStrategy.RANDOM:
+            return self._random(healthy_instances)
+        elif self.strategy == LoadBalancingStrategy.IP_HASH:
+            return self._ip_hash(healthy_instances, client_ip)
+        
+        return healthy_instances[0]
+    
+    def _round_robin(self, instances: List[ServiceInstance]) -> ServiceInstance:
+        """Round robin selection"""
+        service_name = instances[0].service_name
+        counter = self.round_robin_counters[service_name]
+        selected = instances[counter % len(instances)]
+        self.round_robin_counters[service_name] = counter + 1
+        return selected
+    
+    def _least_connections(self, instances: List[ServiceInstance]) -> ServiceInstance:
+        """Least connections selection"""
+        return min(instances, key=lambda x: x.active_connections)
+    
+    def _weighted_round_robin(self, instances: List[ServiceInstance]) -> ServiceInstance:
+        """Weighted round robin selection"""
+        # Create weighted list
+        weighted_instances = []
+        for instance in instances:
+            weighted_instances.extend([instance] * instance.weight)
+        
+        service_name = instances[0].service_name
+        counter = self.round_robin_counters[service_name]
+        selected = weighted_instances[counter % len(weighted_instances)]
+        self.round_robin_counters[service_name] = counter + 1
+        return selected
+    
+    def _random(self, instances: List[ServiceInstance]) -> ServiceInstance:
+        """Random selection"""
+        import random
+        return random.choice(instances)
+    
+    def _ip_hash(self, instances: List[ServiceInstance], client_ip: str) -> ServiceInstance:
+        """IP hash selection"""
+        if not client_ip:
+            return instances[0]
+        
+        hash_value = int(hashlib.md5(client_ip.encode()).hexdigest(), 16)
+        index = hash_value % len(instances)
+        return instances[index]
+
+
+class APIGateway:
+    """Main API Gateway implementation"""
+    
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        self.config = config or {}
+        self.routes: List[Route] = []
+        self.service_instances: Dict[str, List[ServiceInstance]] = defaultdict(list)
+        self.load_balancer = LoadBalancer()
+        self.rate_limits: Dict[str, RateLimitEntry] = {}
+        self.circuit_breakers: Dict[str, CircuitBreakerState] = {}
+        
+        # Metrics
+        self.metrics = {
+            "total_requests": 0,
+            "successful_requests": 0,
+            "failed_requests": 0,
+            "rate_limited_requests": 0,
+            "auth_failures": 0,
+            "circuit_breaker_trips": 0,
+            "avg_response_time": 0.0,
+            "requests_per_minute": 0.0
+        }
+        
+        # Request tracking for rate limiting
+        self.request_times: deque = deque(maxlen=1000)
+        
+        logger.info("API Gateway initialized")
+    
+    def add_route(self, route: Route):
+        """Add a route to the gateway"""
+        self.routes.append(route)
+        logger.info(f"Added route: {route.method} {route.path} -> {route.service_name}")
+    
+    def register_service_instance(self, instance: ServiceInstance):
+        """Register a service instance"""
+        self.service_instances[instance.service_name].append(instance)
+        
+        # Initialize circuit breaker if needed
+        if instance.service_name not in self.circuit_breakers:
+            self.circuit_breakers[instance.service_name] = CircuitBreakerState(
+                service_name=instance.service_name,
+                failure_threshold=5
+            )
+        
+        logger.info(f"Registered service instance: {instance.instance_id} for {instance.service_name}")
+    
+    def unregister_service_instance(self, service_name: str, instance_id: str):
+        """Unregister a service instance"""
+        instances = self.service_instances.get(service_name, [])
+        self.service_instances[service_name] = [
+            inst for inst in instances if inst.instance_id != instance_id
+        ]
+        logger.info(f"Unregistered service instance: {instance_id} for {service_name}")
+    
+    async def handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle incoming request"""
+        start_time = time.time()
+        self.metrics["total_requests"] += 1
+        self.request_times.append(start_time)
+        
+        try:
+            # Extract request details
+            path = request.get("path", "/")
+            method = request.get("method", "GET")
+            headers = request.get("headers", {})
+            body = request.get("body", {})
+            client_ip = request.get("client_ip", "127.0.0.1")
+            
+            # Find matching route
+            route = self._find_route(path, method)
+            if not route:
+                return self._error_response(404, "Route not found")
+            
+            # Authentication
+            if route.auth_required:
+                auth_result = await self._authenticate(request, route)
+                if not auth_result["success"]:
+                    self.metrics["auth_failures"] += 1
+                    return self._error_response(401, auth_result["error"])
+            
+            # Rate limiting
+            if route.rate_limit:
+                if not self._check_rate_limit(client_ip, route.rate_limit):
+                    self.metrics["rate_limited_requests"] += 1
+                    return self._error_response(429, "Rate limit exceeded")
+            
+            # Circuit breaker check
+            circuit_breaker = self.circuit_breakers.get(route.service_name)
+            if circuit_breaker and not circuit_breaker.is_allowed():
+                return self._error_response(503, "Service temporarily unavailable")
+            
+            # Load balancing
+            instances = self.service_instances.get(route.service_name, [])
+            selected_instance = self.load_balancer.select_instance(instances, client_ip)
+            
+            if not selected_instance:
+                return self._error_response(503, "No healthy service instances available")
+            
+            # Transform request if needed
+            if route.transform_request:
+                body = route.transform_request(body)
+            
+            # Forward request to service
+            response = await self._forward_request(selected_instance, route, body, headers)
+            
+            # Transform response if needed
+            if route.transform_response and response.get("success"):
+                response["data"] = route.transform_response(response.get("data"))
+            
+            # Record metrics
+            response_time = time.time() - start_time
+            self._record_metrics(selected_instance, circuit_breaker, response_time, response.get("success", False))
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Request handling failed: {e}")
+            self.metrics["failed_requests"] += 1
+            return self._error_response(500, "Internal server error")
+    
+    def _find_route(self, path: str, method: str) -> Optional[Route]:
+        """Find matching route"""
+        for route in self.routes:
+            if route.matches(path, method):
+                return route
+        return None
+    
+    async def _authenticate(self, request: Dict[str, Any], route: Route) -> Dict[str, Any]:
+        """Authenticate request"""
+        if route.auth_type == AuthenticationType.NONE:
+            return {"success": True}
+        
+        headers = request.get("headers", {})
+        
+        if route.auth_type == AuthenticationType.API_KEY:
+            api_key = headers.get("X-API-Key")
+            if not api_key:
+                return {"success": False, "error": "API key required"}
+            
+            # Validate API key (simplified)
+            if api_key == "neo-clone-api-key":
+                return {"success": True}
+            else:
+                return {"success": False, "error": "Invalid API key"}
+        
+        elif route.auth_type == AuthenticationType.JWT:
+            auth_header = headers.get("Authorization", "")
+            if not auth_header.startswith("Bearer "):
+                return {"success": False, "error": "JWT token required"}
+            
+            token = auth_header[7:]  # Remove "Bearer "
+            # Validate JWT (simplified)
+            try:
+                # In real implementation, verify JWT signature and claims
+                if token and len(token) > 10:
+                    return {"success": True}
+                else:
+                    return {"success": False, "error": "Invalid JWT token"}
+            except Exception:
+                return {"success": False, "error": "Invalid JWT token"}
+        
+        elif route.auth_type == AuthenticationType.BASIC_AUTH:
+            auth_header = headers.get("Authorization", "")
+            if not auth_header.startswith("Basic "):
+                return {"success": False, "error": "Basic auth required"}
+            
+            # Validate basic auth (simplified)
+            try:
+                import base64
+                credentials = base64.b64decode(auth_header[6:]).decode()
+                username, password = credentials.split(":")
+                
+                # Simple validation
+                if username == "admin" and password == "password":
+                    return {"success": True}
+                else:
+                    return {"success": False, "error": "Invalid credentials"}
+            except Exception:
+                return {"success": False, "error": "Invalid basic auth format"}
+        
+        return {"success": False, "error": "Unsupported authentication type"}
+    
+    def _check_rate_limit(self, client_id: str, limit: int) -> bool:
+        """Check rate limit"""
+        if client_id not in self.rate_limits:
+            self.rate_limits[client_id] = RateLimitEntry(client_id=client_id)
+        
+        return self.rate_limits[client_id].is_allowed(
+            limit=limit,
+            window=60,  # 1 minute window
+            limit_type=RateLimitType.TOKEN_BUCKET
+        )
+    
+    async def _forward_request(self, instance: ServiceInstance, route: Route, 
+                            body: Dict[str, Any], headers: Dict[str, Any]) -> Dict[str, Any]:
+        """Forward request to service instance"""
+        try:
+            # Update instance metrics
+            instance.active_connections += 1
+            instance.total_requests += 1
+            
+            # Simulate HTTP request (in real implementation, use aiohttp)
+            await asyncio.sleep(0.1)  # Simulate network latency
+            
+            # Simulate service response
+            response = {
+                "success": True,
+                "data": {
+                    "service": instance.service_name,
+                    "instance": instance.instance_id,
+                    "request_processed": True,
+                    "timestamp": datetime.now().isoformat()
+                },
+                "status_code": 200,
+                "headers": {"Content-Type": "application/json"}
+            }
+            
+            # Update instance metrics
+            instance.active_connections -= 1
+            
+            return response
+            
+        except Exception as e:
+            instance.active_connections -= 1
+            instance.failed_requests += 1
+            logger.error(f"Failed to forward request to {instance.url}: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "status_code": 502
+            }
+    
+    def _record_metrics(self, instance: ServiceInstance, 
+                      circuit_breaker: Optional[CircuitBreakerState],
+                      response_time: float, success: bool):
+        """Record request metrics"""
+        # Update instance metrics
+        if success:
+            self.metrics["successful_requests"] += 1
+            if circuit_breaker:
+                circuit_breaker.record_success()
+        else:
+            self.metrics["failed_requests"] += 1
+            instance.failed_requests += 1
+            if circuit_breaker:
+                circuit_breaker.record_failure()
+        
+        # Update response time
+        instance.avg_response_time = (instance.avg_response_time + response_time) / 2
+        
+        # Update gateway metrics
+        self.metrics["avg_response_time"] = (
+            (self.metrics["avg_response_time"] + response_time) / 2
+        )
+        
+        # Calculate requests per minute
+        now = time.time()
+        recent_requests = [t for t in self.request_times if now - t < 60]
+        self.metrics["requests_per_minute"] = len(recent_requests)
+    
+    def _error_response(self, status_code: int, message: str) -> Dict[str, Any]:
+        """Create error response"""
+        return {
+            "success": False,
+            "error": message,
+            "status_code": status_code,
+            "timestamp": datetime.now().isoformat()
+        }
+    
+    def get_metrics(self) -> Dict[str, Any]:
+        """Get gateway metrics"""
+        return {
+            **self.metrics,
+            "routes_count": len(self.routes),
+            "services_count": len(self.service_instances),
+            "total_instances": sum(len(instances) for instances in self.service_instances.values()),
+            "circuit_breakers": {
+                name: {
+                    "state": cb.state,
+                    "failure_count": cb.failure_count
+                }
+                for name, cb in self.circuit_breakers.items()
+            },
+            "service_instances": {
+                name: [
+                    {
+                        "instance_id": inst.instance_id,
+                        "healthy": inst.healthy,
+                        "active_connections": inst.active_connections,
+                        "success_rate": inst.success_rate,
+                        "avg_response_time": inst.avg_response_time
+                    }
+                    for inst in instances
+                ]
+                for name, instances in self.service_instances.items()
+            }
+        }
+    
+    def health_check(self) -> Dict[str, Any]:
+        """Gateway health check"""
+        healthy_instances = sum(
+            1 for instances in self.service_instances.values()
+            for inst in instances if inst.healthy
+        )
+        
+        total_instances = sum(
+            len(instances) for instances in self.service_instances.values()
+        )
+        
+        return {
+            "status": "healthy" if healthy_instances > 0 else "unhealthy",
+            "healthy_instances": healthy_instances,
+            "total_instances": total_instances,
+            "routes": len(self.routes),
+            "metrics": self.metrics,
+            "timestamp": datetime.now().isoformat()
+        }
+
+
+# Gateway Configuration
+class GatewayConfig:
+    """Gateway configuration presets"""
+    
+    @staticmethod
+    def get_default_config() -> Dict[str, Any]:
+        """Get default gateway configuration"""
+        return {
+            "port": 8080,
+            "host": "0.0.0.0",
+            "load_balancing_strategy": LoadBalancingStrategy.ROUND_ROBIN,
+            "rate_limiting": {
+                "enabled": True,
+                "default_limit": 100,  # requests per minute
+                "type": RateLimitType.TOKEN_BUCKET
+            },
+            "authentication": {
+                "enabled": False,
+                "type": AuthenticationType.NONE
+            },
+            "circuit_breaker": {
+                "enabled": True,
+                "failure_threshold": 5,
+                "timeout": 60.0
+            },
+            "logging": {
+                "level": "INFO",
+                "access_log": True
+            }
+        }
+    
+    @staticmethod
+    def get_production_config() -> Dict[str, Any]:
+        """Get production-ready configuration"""
+        return {
+            "port": 80,
+            "host": "0.0.0.0",
+            "load_balancing_strategy": LoadBalancingStrategy.LEAST_CONNECTIONS,
+            "rate_limiting": {
+                "enabled": True,
+                "default_limit": 1000,
+                "type": RateLimitType.SLIDING_WINDOW
+            },
+            "authentication": {
+                "enabled": True,
+                "type": AuthenticationType.JWT
+            },
+            "circuit_breaker": {
+                "enabled": True,
+                "failure_threshold": 10,
+                "timeout": 30.0
+            },
+            "logging": {
+                "level": "WARNING",
+                "access_log": True
+            }
+        }
+
+
+# Route Definitions for Neo-Clone Services
+class NeoCloneRoutes:
+    """Predefined routes for Neo-Clone services"""
+    
+    @staticmethod
+    def get_skill_service_routes() -> List[Route]:
+        """Get skill service routes"""
+        return [
+            Route(
+                path="/api/skills/*",
+                method="GET",
+                service_name="skill_service",
+                auth_required=True,
+                auth_type=AuthenticationType.API_KEY,
+                rate_limit=100
+            ),
+            Route(
+                path="/api/skills/execute",
+                method="POST",
+                service_name="skill_service",
+                auth_required=True,
+                auth_type=AuthenticationType.API_KEY,
+                rate_limit=50,
+                timeout=60.0
+            )
+        ]
+    
+    @staticmethod
+    def get_mcp_service_routes() -> List[Route]:
+        """Get MCP service routes"""
+        return [
+            Route(
+                path="/api/mcp/tools",
+                method="GET",
+                service_name="mcp_service",
+                auth_required=True,
+                auth_type=AuthenticationType.API_KEY,
+                rate_limit=200
+            ),
+            Route(
+                path="/api/mcp/execute",
+                method="POST",
+                service_name="mcp_service",
+                auth_required=True,
+                auth_type=AuthenticationType.API_KEY,
+                rate_limit=100,
+                timeout=30.0
+            )
+        ]
+    
+    @staticmethod
+    def get_memory_service_routes() -> List[Route]:
+        """Get memory service routes"""
+        return [
+            Route(
+                path="/api/memory/*",
+                method="GET",
+                service_name="memory_service",
+                auth_required=True,
+                auth_type=AuthenticationType.API_KEY,
+                rate_limit=500
+            ),
+            Route(
+                path="/api/memory/store",
+                method="POST",
+                service_name="memory_service",
+                auth_required=True,
+                auth_type=AuthenticationType.API_KEY,
+                rate_limit=200
+            )
+        ]
+    
+    @staticmethod
+    def get_validation_service_routes() -> List[Route]:
+        """Get validation service routes"""
+        return [
+            Route(
+                path="/api/validation/health",
+                method="GET",
+                service_name="validation_service",
+                auth_required=False,
+                rate_limit=60
+            ),
+            Route(
+                path="/api/validation/validate",
+                method="POST",
+                service_name="validation_service",
+                auth_required=True,
+                auth_type=AuthenticationType.API_KEY,
+                rate_limit=30,
+                timeout=120.0
+            )
+        ]
+    
+    @staticmethod
+    def get_monitoring_service_routes() -> List[Route]:
+        """Get monitoring service routes"""
+        return [
+            Route(
+                path="/api/monitoring/metrics",
+                method="GET",
+                service_name="monitoring_service",
+                auth_required=True,
+                auth_type=AuthenticationType.API_KEY,
+                rate_limit=100
+            ),
+            Route(
+                path="/api/monitoring/health",
+                method="GET",
+                service_name="monitoring_service",
+                auth_required=False,
+                rate_limit=60
+            )
+        ]
+    
+    @staticmethod
+    def get_all_routes() -> List[Route]:
+        """Get all Neo-Clone routes"""
+        routes = []
+        routes.extend(NeoCloneRoutes.get_skill_service_routes())
+        routes.extend(NeoCloneRoutes.get_mcp_service_routes())
+        routes.extend(NeoCloneRoutes.get_memory_service_routes())
+        routes.extend(NeoCloneRoutes.get_validation_service_routes())
+        routes.extend(NeoCloneRoutes.get_monitoring_service_routes())
+        return routes
+
+
+if __name__ == "__main__":
+    # Demo API Gateway
+    gateway = APIGateway(GatewayConfig.get_default_config())
+    
+    # Add Neo-Clone routes
+    for route in NeoCloneRoutes.get_all_routes():
+        gateway.add_route(route)
+    
+    # Register some service instances
+    skill_instance1 = ServiceInstance(
+        service_name="skill_service",
+        instance_id="skill_1",
+        host="localhost",
+        port=8001,
+        weight=2
+    )
+    
+    skill_instance2 = ServiceInstance(
+        service_name="skill_service",
+        instance_id="skill_2",
+        host="localhost",
+        port=8002,
+        weight=1
+    )
+    
+    mcp_instance = ServiceInstance(
+        service_name="mcp_service",
+        instance_id="mcp_1",
+        host="localhost",
+        port=8003
+    )
+    
+    gateway.register_service_instance(skill_instance1)
+    gateway.register_service_instance(skill_instance2)
+    gateway.register_service_instance(mcp_instance)
+    
+    # Test requests
+    async def test_gateway():
+        print("Testing API Gateway...")
+        
+        # Test request
+        test_request = {
+            "path": "/api/skills/list",
+            "method": "GET",
+            "headers": {"X-API-Key": "neo-clone-api-key"},
+            "body": {},
+            "client_ip": "192.168.1.100"
+        }
+        
+        response = await gateway.handle_request(test_request)
+        print(f"Response: {json.dumps(response, indent=2)}")
+        
+        # Show metrics
+        metrics = gateway.get_metrics()
+        print(f"\nGateway Metrics:")
+        print(f"Total Requests: {metrics['total_requests']}")
+        print(f"Successful Requests: {metrics['successful_requests']}")
+        print(f"Services: {metrics['services_count']}")
+        print(f"Instances: {metrics['total_instances']}")
+        
+        # Health check
+        health = gateway.health_check()
+        print(f"\nGateway Health:")
+        print(f"Status: {health['status']}")
+        print(f"Healthy Instances: {health['healthy_instances']}/{health['total_instances']}")
+    
+    asyncio.run(test_gateway())

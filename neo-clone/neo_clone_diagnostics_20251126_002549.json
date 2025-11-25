@@ -1,0 +1,163 @@
+{
+  "timestamp": "2025-11-26T00:25:49.847448",
+  "system_info": {
+    "python_version": "3.10.11 (tags/v3.10.11:7d4cc5a, Apr  5 2023, 00:38:17) [MSC v.1929 64 bit (AMD64)]",
+    "platform": "win32",
+    "memory_usage": {
+      "total": 34260332544,
+      "available": 13414428672,
+      "percent": 60.8,
+      "used": 20845903872,
+      "free": 13414428672
+    },
+    "cpu_count": 12,
+    "disk_usage": {
+      "total": 249274822656,
+      "used": 202751029248,
+      "free": 46523793408,
+      "percent": 81.3
+    }
+  },
+  "component_status": {
+    "skills": {
+      "status": "error",
+      "last_check": "2025-11-26 00:25:48.206991",
+      "error": "Can't instantiate abstract class FileManagerSkill with abstract methods _execute_async, get_parameters"
+    },
+    "mcp_tools": {
+      "status": "healthy",
+      "last_check": "2025-11-26 00:25:48.206991",
+      "available": true,
+      "tool_count": 10
+    },
+    "extended_tools": {
+      "status": "healthy",
+      "last_check": "2025-11-26 00:25:48.208523",
+      "tool_count": 18,
+      "categories": 6,
+      "test_success_rate": 1.0
+    },
+    "memory": {
+      "status": "healthy",
+      "last_check": "2025-11-26 00:25:48.208523",
+      "system_usage_percent": 60.2,
+      "process_usage_mb": 32.390625,
+      "memory_ops_ok": true
+    },
+    "performance": {
+      "status": "healthy",
+      "last_check": "2025-11-26 00:25:49.844779",
+      "avg_response_time": 0.12600431442260743,
+      "cpu_percent": 19.8,
+      "disk_usage_percent": 81.3
+    },
+    "file_system": {
+      "status": "healthy",
+      "last_check": "2025-11-26 00:25:48.217597",
+      "read_ok": true,
+      "write_ok": true,
+      "delete_ok": true,
+      "dir_accessible": true
+    },
+    "network": {
+      "status": "healthy",
+      "last_check": "2025-11-26 00:25:48.770169",
+      "dns_ok": true,
+      "http_ok": false
+    }
+  },
+  "validation_summary": {
+    "summary": {
+      "total_tests": 7,
+      "successful_tests": 6,
+      "success_rate": 85.71428571428571,
+      "last_validation": "2025-11-26T00:25:48.770169"
+    },
+    "test_statistics": {
+      "skills_system": {
+        "total_runs": 1,
+        "success_rate": 0.0,
+        "avg_execution_time": 0.004647731781005859,
+        "last_success": null
+      },
+      "mcp_tools": {
+        "total_runs": 1,
+        "success_rate": 100.0,
+        "avg_execution_time": 0.0,
+        "last_success": "2025-11-26T00:25:48.206991"
+      },
+      "extended_tools": {
+        "total_runs": 1,
+        "success_rate": 100.0,
+        "avg_execution_time": 0.0015325546264648438,
+        "last_success": "2025-11-26T00:25:48.208523"
+      },
+      "memory_system": {
+        "total_runs": 1,
+        "success_rate": 100.0,
+        "avg_execution_time": 0.0,
+        "last_success": "2025-11-26T00:25:48.208523"
+      },
+      "performance_metrics": {
+        "total_runs": 1,
+        "success_rate": 100.0,
+        "avg_execution_time": 1.6362559795379639,
+        "last_success": "2025-11-26T00:25:49.844779"
+      },
+      "file_system": {
+        "total_runs": 1,
+        "success_rate": 100.0,
+        "avg_execution_time": 0.009074211120605469,
+        "last_success": "2025-11-26T00:25:48.217597"
+      },
+      "network_connectivity": {
+        "total_runs": 1,
+        "success_rate": 100.0,
+        "avg_execution_time": 0.5525720119476318,
+        "last_success": "2025-11-26T00:25:48.770169"
+      }
+    },
+    "recent_failures": [
+      {
+        "test_name": "skills_system",
+        "error": "Can't instantiate abstract class FileManagerSkill with abstract methods _execute_async, get_parameters",
+        "timestamp": "2025-11-26T00:25:48.206991"
+      }
+    ]
+  },
+  "healing_summary": {
+    "summary": {
+      "total_actions": 1,
+      "successful_actions": 0,
+      "success_rate": 0.0,
+      "last_action": "2025-11-26T00:25:49.846921"
+    },
+    "action_type_statistics": {
+      "restart": {
+        "total_actions": 1,
+        "success_rate": 0.0,
+        "last_action": "2025-11-26T00:25:49.846921"
+      }
+    },
+    "recent_failures": [
+      {
+        "action_id": "heal_skills_system",
+        "action_type": "restart",
+        "target": "skills",
+        "error": "HealingAction.__init__() got an unexpected keyword argument 'details'",
+        "timestamp": "2025-11-26T00:25:49.846921"
+      }
+    ]
+  },
+  "recent_health": [
+    {
+      "overall_health": "degraded",
+      "score": 85.71428571428571,
+      "issues": [
+        "skills_system: Can't instantiate abstract class FileManagerSkill with abstract methods _execute_async, get_parameters"
+      ],
+      "warnings": [],
+      "timestamp": "2025-11-26T00:25:49.844779"
+    }
+  ]
+}

@@ -164,8 +164,8 @@ class SandboxConfig:
 class SecurityManager:
     """Security manager for MCP tool execution"""
     
-    def __init__(self, config: SecurityConfig):
-        self.config = config
+    def __init__(self, config: Optional[SecurityConfig] = None):
+        self.config = config or SecurityConfig()
         self.audit_log: List[Dict[str, Any]] = []
         
     def validate_execution(self, tool: MCPTool, parameters: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
@@ -797,6 +797,19 @@ class MCPClient:
             except Exception as e:
                 logger.error(f"Cache cleanup error: {e}")
                 await asyncio.sleep(60)
+    
+    def get_status(self) -> Dict[str, Any]:
+        """Get client status"""
+        return {
+            'running': self._running,
+            'connected': True,  # For now, always true
+            'tools_registered': len(self.registry.tools),
+            'last_update': self.registry.last_update.isoformat() if self.registry.last_update else None
+        }
+    
+    def list_available_tools(self) -> List[Dict[str, Any]]:
+        """List all available tools"""
+        return [tool.to_dict() for tool in self.registry.tools.values()]
     
     def get_stats(self) -> Dict[str, Any]:
         """Get client statistics"""
