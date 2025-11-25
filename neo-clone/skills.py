@@ -1749,6 +1749,143 @@ Based on your problem type, consider these algorithms:
         return guidance
 
 
+class OSINTSkill(BaseSkill):
+    """Skill for Open Source Intelligence gathering and analysis"""
+
+    def __init__(self):
+        super().__init__()
+        self.metadata.category = SkillCategory.DATA_ANALYSIS
+        self.metadata.description = "Performs OSINT investigations and threat intelligence analysis"
+        self.metadata.capabilities = [
+            "dark_web_search",
+            "artifact_extraction",
+            "threat_intelligence",
+            "evidence_collection",
+            "report_generation"
+        ]
+
+    def get_parameters(self) -> Dict[str, SkillParameter]:
+        return {
+            "query": SkillParameter(
+                name="query",
+                param_type=SkillParameterType.STRING,
+                required=True,
+                description="Search query for OSINT investigation"
+            ),
+            "search_engines": SkillParameter(
+                name="search_engines",
+                param_type=SkillParameterType.LIST,
+                required=False,
+                default=["ahmia", "torch", "notevil"],
+                description="List of search engines to use"
+            ),
+            "max_results": SkillParameter(
+                name="max_results",
+                param_type=SkillParameterType.INTEGER,
+                required=False,
+                default=10,
+                description="Maximum number of results to analyze"
+            ),
+            "generate_report": SkillParameter(
+                name="generate_report",
+                param_type=SkillParameterType.BOOLEAN,
+                required=False,
+                default=True,
+                description="Generate detailed investigation report"
+            )
+        }
+
+    async def _execute_async(self, context: SkillContext, **kwargs) -> SkillResult:
+        """Execute OSINT investigation asynchronously"""
+        try:
+            query = context.parameters.get("query") if hasattr(context, 'parameters') else kwargs.get("query")
+            search_engines = context.parameters.get("search_engines", ["ahmia"]) if hasattr(context, 'parameters') else kwargs.get("search_engines", ["ahmia"])
+            max_results = context.parameters.get("max_results", 10) if hasattr(context, 'parameters') else kwargs.get("max_results", 10)
+            generate_report = context.parameters.get("generate_report", True) if hasattr(context, 'parameters') else kwargs.get("generate_report", True)
+
+            if not query:
+                return SkillResult(
+                    success=False,
+                    output={},
+                    skill_name="osintskill",
+                    execution_time=0.0,
+                    error_message="Query parameter is required for OSINT investigation"
+                )
+
+            # Import Neo-OSINT components
+            import sys
+            from pathlib import Path
+            neo_osint_path = Path(__file__).parent / "neo_osint"
+            if neo_osint_path.exists():
+                sys.path.insert(0, str(neo_osint_path))
+                
+                try:
+                    from search.discovery import SearchDiscovery
+                    from ai.analyzer import AIAnalyzer
+                    from evidence.collector import EvidenceCollector
+                    
+                    # Initialize OSINT components
+                    discovery = SearchDiscovery()
+                    analyzer = AIAnalyzer()
+                    collector = EvidenceCollector()
+                    
+                    # Perform search
+                    search_results = await discovery.search(query, engines=search_engines, max_results=max_results)
+                    
+                    # Analyze results
+                    analysis = await analyzer.analyze(search_results, query)
+                    
+                    # Collect evidence if needed
+                    evidence = {}
+                    if generate_report:
+                        evidence = await collector.collect_evidence(search_results, analysis)
+                    
+                    # Generate report
+                    report_data = {
+                        "query": query,
+                        "timestamp": context.timestamp.isoformat() if hasattr(context, 'timestamp') else "unknown",
+                        "search_results": len(search_results),
+                        "analysis": analysis,
+                        "evidence": evidence,
+                        "threat_level": analysis.get("threat_level", "LOW"),
+                        "confidence_score": analysis.get("confidence_score", 0.0)
+                    }
+                    
+                    return SkillResult(
+                        success=True,
+                        output=report_data,
+                        skill_name="osintskill",
+                        execution_time=0.0,
+                        error_message=None
+                    )
+                    
+                except ImportError as e:
+                    return SkillResult(
+                        success=False,
+                        output={},
+                        skill_name="osintskill",
+                        execution_time=0.0,
+                        error_message=f"Neo-OSINT components not available: {e}"
+                    )
+            else:
+                return SkillResult(
+                    success=False,
+                    output={},
+                    skill_name="osintskill",
+                    execution_time=0.0,
+                    error_message="Neo-OSINT module not found"
+                )
+
+        except Exception as e:
+            return SkillResult(
+                success=False,
+                output={},
+                skill_name="osintskill",
+                execution_time=0.0,
+                error_message=f"OSINT investigation failed: {str(e)}"
+            )
+
+
 # ============================================================================
 # UNIFIED SKILLS MANAGER
 # ============================================================================
@@ -1778,6 +1915,7 @@ class SkillsManager:
             TextAnalysisSkill(),
             WebSearchSkill(),
             MLTrainingSkill(),
+            OSINTSkill(),
         ]
 
         # Register basic skills
@@ -1808,6 +1946,16 @@ class SkillsManager:
             logger.warning(f"Could not import PlanningSkill: {e}")
         except Exception as e:
             logger.warning(f"Could not register PlanningSkill: {e}")
+
+        # Register TONL skill
+        try:
+            from tonl_skill import TONLSkill
+            self.register_skill(TONLSkill())
+            logger.info("Registered TONL skill: tonl_encoder_decoder")
+        except ImportError as e:
+            logger.warning(f"Could not import TONLSkill: {e}")
+        except Exception as e:
+            logger.warning(f"Could not register TONLSkill: {e}")
 
         # Note: Other skills need interface updates to be compatible with current BaseSkill
         # autonomous_reasoning_skill, system_healer, autonomous_skills need refactoring
