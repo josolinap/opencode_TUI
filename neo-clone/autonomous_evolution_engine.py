@@ -4034,29 +4034,18 @@ class AutonomousEvolutionEngine:
                         internet_opportunities = [opp for opp in opportunities if opp.category in ['libraries', 'tools', 'research', 'security']]
                         internal_opportunities = [opp for opp in opportunities if opp.category in ['internal_improvement', 'skill_enhancement', 'tool_optimization']]
 
-                        # Prioritize internal improvements first (self-improvement)
-                        for opp in internal_opportunities[:3]:  # Top 3 internal opportunities
-                            try:
-                                if opp not in [item[1] for item in self.implementation_queue.queue]:
-                                    self.implementation_queue.put(('internal', opp))
-                            except Exception as queue_e:
-                                logger.warning(f"Could not queue internal opportunity: {queue_e}")
+                        # Prioritize opportunities using learning system predictions
+                        prioritized_opportunities = self._prioritize_opportunities_with_learning(
+                            internal_opportunities, internet_opportunities, high_priority + medium_priority
+                        )
 
-                        # Then internet discoveries for exploration
-                        for opp in internet_opportunities[:5]:  # Top 5 internet opportunities
+                        # Queue opportunities in priority order
+                        for priority_score, opp in prioritized_opportunities:
                             try:
                                 if opp not in [item[1] for item in self.implementation_queue.queue]:
-                                    self.implementation_queue.put(('internet', opp))
+                                    self.implementation_queue.put((priority_score, opp))
                             except Exception as queue_e:
-                                logger.warning(f"Could not queue internet opportunity: {queue_e}")
-
-                        # Add high and medium priority local opportunities
-                        for opp in high_priority + medium_priority:
-                            try:
-                                if opp not in [item[1] for item in self.implementation_queue.queue]:
-                                    self.implementation_queue.put((opp.priority, opp))
-                            except Exception as queue_e:
-                                logger.warning(f"Could not queue local opportunity: {queue_e}")
+                                logger.warning(f"Could not queue opportunity {opp.opportunity_id}: {queue_e}")
 
                         self.metrics.opportunities_discovered += len(opportunities)
                         self.metrics.last_scan = current_time
@@ -4572,408 +4561,114 @@ class AutonomousEvolutionEngine:
         except Exception as e:
             logger.error(f"Performance optimization failed: {e}")
 
-    def _analyze_internal_system(self) -> List[Opportunity]:
-        """Analyze the internal Neo-Clone system for improvement opportunities"""
-        opportunities = []
+    def _record_implementation_outcome(self, opportunity: Opportunity, success: bool,
+                                     implementation_time: float, result: Dict[str, Any]):
+        """Record implementation outcome for learning system"""
+        try:
+            from evolution_learning_system import record_evolution_outcome
+
+            # Prepare context for learning
+            context = {
+                'priority': opportunity.priority,
+                'impact_score': opportunity.impact_score,
+                'complexity': opportunity.complexity,
+                'affected_files_count': len(opportunity.affected_files),
+                'implementation_plan_keys': list(opportunity.implementation_plan.keys())
+            }
+
+            # Record the outcome
+            record_evolution_outcome(
+                opportunity_id=opportunity.opportunity_id,
+                category=opportunity.category,
+                priority=opportunity.priority,
+                success=success,
+                implementation_time=implementation_time,
+                validation_result=result.get('validation'),
+                error_message=result.get('error'),
+                context=context
+            )
+
+        except ImportError:
+            # Learning system not available, skip recording
+            pass
+        except Exception as e:
+            logger.error(f"Failed to record implementation outcome: {e}")
+
+    def _prioritize_opportunities_with_learning(self, internal_opps: List[Opportunity],
+                                              internet_opps: List[Opportunity],
+                                              local_opps: List[Opportunity]) -> List[Tuple[float, Opportunity]]:
+        """Prioritize opportunities using learning system predictions"""
+        prioritized = []
 
         try:
-            # Analyze existing skills for improvement opportunities
-            skill_opportunities = self._analyze_existing_skills()
-            opportunities.extend(skill_opportunities)
+            # Import learning system
+            from evolution_learning_system import predict_opportunity_success
 
-            # Analyze existing tools for optimization opportunities
-            tool_opportunities = self._analyze_existing_tools()
-            opportunities.extend(tool_opportunities)
+            # Process internal opportunities (highest priority)
+            for opp in internal_opps[:3]:
+                context = {
+                    'source': 'internal_analysis',
+                    'affected_files_count': len(opp.affected_files),
+                    'complexity': opp.complexity
+                }
+                success_prob = predict_opportunity_success(opp.category, opp.priority, context)
+                priority_score = success_prob * 100 + 50  # Internal bonus
+                prioritized.append((priority_score, opp))
 
-            # Analyze system architecture for enhancement opportunities
-            architecture_opportunities = self._analyze_system_architecture()
-            opportunities.extend(architecture_opportunities)
+            # Process internet opportunities
+            for opp in internet_opps[:5]:
+                context = {
+                    'source': 'internet_scanning',
+                    'stars': opp.implementation_plan.get('stars', 0),
+                    'language': opp.implementation_plan.get('language', 'unknown')
+                }
+                success_prob = predict_opportunity_success(opp.category, opp.priority, context)
+                priority_score = success_prob * 100 + 20  # Internet bonus
+                prioritized.append((priority_score, opp))
 
-            # Analyze performance bottlenecks in existing code
-            performance_opportunities = self._analyze_performance_bottlenecks()
-            opportunities.extend(performance_opportunities)
+            # Process local opportunities
+            for opp in local_opps:
+                context = {
+                    'source': 'local_scanning',
+                    'affected_files_count': len(opp.affected_files),
+                    'complexity': opp.complexity
+                }
+                success_prob = predict_opportunity_success(opp.category, opp.priority, context)
+                priority_score = success_prob * 100
+                prioritized.append((priority_score, opp))
 
-            # Analyze security of existing components
-            security_opportunities = self._analyze_internal_security()
-            opportunities.extend(security_opportunities)
+            # Sort by priority score (highest first)
+            prioritized.sort(key=lambda x: x[0], reverse=True)
 
-            logger.info(f"Internal system analysis found {len(opportunities)} improvement opportunities")
+            logger.info(f"Prioritized {len(prioritized)} opportunities using learning predictions")
 
-        except Exception as e:
-            logger.error(f"Internal system analysis failed: {e}")
+        except ImportError:
+            # Fallback to simple prioritization if learning system not available
+            logger.warning("Learning system not available, using fallback prioritization")
 
-        return opportunities
+            for opp in internal_opps[:3]:
+                prioritized.append((80 + opp.impact_score, opp))  # High priority for internal
 
-    def _analyze_existing_skills(self) -> List[Opportunity]:
-        """Analyze existing skills for improvement opportunities"""
-        opportunities = []
+            for opp in internet_opps[:5]:
+                prioritized.append((60 + opp.impact_score, opp))  # Medium-high for internet
 
-        try:
-            # Check if skills directory exists
-            skills_dir = "skills"
-            if not os.path.exists(skills_dir):
-                return opportunities
+            for opp in local_opps:
+                priority_map = {'critical': 100, 'high': 75, 'medium': 50, 'low': 25}
+                base_priority = priority_map.get(opp.priority, 50)
+                prioritized.append((base_priority + opp.impact_score, opp))
 
-            # Analyze each skill file
-            for filename in os.listdir(skills_dir):
-                if filename.endswith('.py') and not filename.startswith('__'):
-                    skill_path = os.path.join(skills_dir, filename)
-                    try:
-                        with open(skill_path, 'r', encoding='utf-8') as f:
-                            content = f.read()
-
-                        # Check for missing features in skills
-                        if 'error handling' not in content.lower() and 'try:' not in content:
-                            opportunities.append(Opportunity(
-                                opportunity_id=f"skill_error_handling_{filename}_{hashlib.md5(content.encode()).hexdigest()[:8]}",
-                                category="internal_improvement",
-                                priority="medium",
-                                title=f"Add error handling to {filename}",
-                                description=f"Skill {filename} lacks proper error handling",
-                                impact_score=0.7,
-                                complexity="low",
-                                affected_files=[skill_path],
-                                implementation_plan={
-                                    'action': 'add_error_handling',
-                                    'skill_file': skill_path,
-                                    'pattern': 'add_try_catch'
-                                }
-                            ))
-
-                        # Check for missing caching
-                        if 'cache' not in content.lower() and len(content.splitlines()) > 50:
-                            opportunities.append(Opportunity(
-                                opportunity_id=f"skill_caching_{filename}_{hashlib.md5(content.encode()).hexdigest()[:8]}",
-                                category="skill_enhancement",
-                                priority="low",
-                                title=f"Add caching to {filename}",
-                                description=f"Skill {filename} could benefit from caching for better performance",
-                                impact_score=0.6,
-                                complexity="medium",
-                                affected_files=[skill_path],
-                                implementation_plan={
-                                    'action': 'add_caching',
-                                    'skill_file': skill_path,
-                                    'cache_type': 'lru_cache'
-                                }
-                            ))
-
-                        # Check for missing documentation
-                        if '"""' not in content or content.count('"""') < 2:
-                            opportunities.append(Opportunity(
-                                opportunity_id=f"skill_docs_{filename}_{hashlib.md5(content.encode()).hexdigest()[:8]}",
-                                category="internal_improvement",
-                                priority="low",
-                                title=f"Add documentation to {filename}",
-                                description=f"Skill {filename} lacks proper documentation",
-                                impact_score=0.5,
-                                complexity="low",
-                                affected_files=[skill_path],
-                                implementation_plan={
-                                    'action': 'add_documentation',
-                                    'skill_file': skill_path
-                                }
-                            ))
-
-                    except Exception as skill_e:
-                        logger.warning(f"Could not analyze skill {filename}: {skill_e}")
+            prioritized.sort(key=lambda x: x[0], reverse=True)
 
         except Exception as e:
-            logger.error(f"Skill analysis failed: {e}")
+            logger.error(f"Failed to prioritize opportunities with learning: {e}")
+            # Ultimate fallback - just queue them in order
+            for opp in internal_opps[:3] + internet_opps[:5] + local_opps:
+                prioritized.append((50, opp))
 
-        return opportunities
-
-    def _analyze_existing_tools(self) -> List[Opportunity]:
-        """Analyze existing tools for optimization opportunities"""
-        opportunities = []
-
-        try:
-            # Define tool files to analyze
-            tool_files = [
-                'enhanced_llm_client.py',
-                'ai_model_integration.py',
-                'code_generation.py',
-                'data_inspector.py',
-                'file_manager.py',
-                'web_search.py'
-            ]
-
-            for tool_file in tool_files:
-                if os.path.exists(tool_file):
-                    try:
-                        with open(tool_file, 'r', encoding='utf-8') as f:
-                            content = f.read()
-
-                        # Check for performance optimizations
-                        if 'for ' in content and 'range(' in content and 'len(' not in content:
-                            opportunities.append(Opportunity(
-                                opportunity_id=f"tool_performance_{tool_file}_{hashlib.md5(content.encode()).hexdigest()[:8]}",
-                                category="tool_optimization",
-                                priority="medium",
-                                title=f"Optimize loops in {tool_file}",
-                                description=f"Tool {tool_file} has loops that could be optimized",
-                                impact_score=0.6,
-                                complexity="medium",
-                                affected_files=[tool_file],
-                                implementation_plan={
-                                    'action': 'optimize_loops',
-                                    'tool_file': tool_file
-                                }
-                            ))
-
-                        # Check for memory optimizations
-                        if len(content.splitlines()) > 200 and 'global' in content:
-                            opportunities.append(Opportunity(
-                                opportunity_id=f"tool_memory_{tool_file}_{hashlib.md5(content.encode()).hexdigest()[:8]}",
-                                category="tool_optimization",
-                                priority="low",
-                                title=f"Optimize memory usage in {tool_file}",
-                                description=f"Tool {tool_file} could benefit from memory optimizations",
-                                impact_score=0.5,
-                                complexity="high",
-                                affected_files=[tool_file],
-                                implementation_plan={
-                                    'action': 'optimize_memory',
-                                    'tool_file': tool_file
-                                }
-                            ))
-
-                    except Exception as tool_e:
-                        logger.warning(f"Could not analyze tool {tool_file}: {tool_e}")
-
-        except Exception as e:
-            logger.error(f"Tool analysis failed: {e}")
-
-        return opportunities
-
-    def _analyze_system_architecture(self) -> List[Opportunity]:
-        """Analyze system architecture for enhancement opportunities"""
-        opportunities = []
-
-        try:
-            # Check for modularization opportunities
-            large_files = []
-            for root, dirs, files in os.walk('.'):
-                for file in files:
-                    if file.endswith('.py') and not file.startswith('__'):
-                        filepath = os.path.join(root, file)
-                        try:
-                            with open(filepath, 'r', encoding='utf-8') as f:
-                                lines = len(f.readlines())
-                                if lines > 500:  # Files with more than 500 lines
-                                    large_files.append((filepath, lines))
-                        except:
-                            pass
-
-            # Suggest breaking up large files
-            for filepath, lines in large_files:
-                opportunities.append(Opportunity(
-                    opportunity_id=f"architecture_modularize_{os.path.basename(filepath)}_{hashlib.md5(filepath.encode()).hexdigest()[:8]}",
-                    category="internal_improvement",
-                    priority="medium",
-                    title=f"Modularize large file: {os.path.basename(filepath)}",
-                    description=f"File {os.path.basename(filepath)} has {lines} lines and should be broken into smaller modules",
-                    impact_score=0.7,
-                    complexity="high",
-                    affected_files=[filepath],
-                    implementation_plan={
-                        'action': 'modularize_file',
-                        'file_path': filepath,
-                        'line_count': lines
-                    }
-                ))
-
-            # Check for circular import issues
-            opportunities.extend(self._detect_circular_imports())
-
-        except Exception as e:
-            logger.error(f"Architecture analysis failed: {e}")
-
-        return opportunities
-
-    def _analyze_performance_bottlenecks(self) -> List[Opportunity]:
-        """Analyze performance bottlenecks in existing code"""
-        opportunities = []
-
-        try:
-            # Look for common performance issues
-            for root, dirs, files in os.walk('.'):
-                for file in files:
-                    if file.endswith('.py'):
-                        filepath = os.path.join(root, file)
-                        try:
-                            with open(filepath, 'r', encoding='utf-8') as f:
-                                content = f.read()
-
-                            lines = content.splitlines()
-
-                            # Check for inefficient string operations
-                            for i, line in enumerate(lines):
-                                if '+' in line and ('"' in line or "'" in line) and 'join(' not in line:
-                                    opportunities.append(Opportunity(
-                                        opportunity_id=f"perf_string_{filepath}_{i}_{hashlib.md5(line.encode()).hexdigest()[:8]}",
-                                        category="tool_optimization",
-                                        priority="low",
-                                        title=f"Optimize string concatenation in {os.path.basename(filepath)}",
-                                        description=f"Line {i+1} uses inefficient string concatenation",
-                                        impact_score=0.4,
-                                        complexity="low",
-                                        affected_files=[filepath],
-                                        implementation_plan={
-                                            'action': 'optimize_string_concat',
-                                            'file_path': filepath,
-                                            'line_number': i+1
-                                        }
-                                    ))
-
-                            # Check for unused imports
-                            import_lines = [i for i, line in enumerate(lines) if line.startswith('import ') or line.startswith('from ')]
-                            if len(import_lines) > 10:
-                                opportunities.append(Opportunity(
-                                    opportunity_id=f"perf_imports_{filepath}_{hashlib.md5(content.encode()).hexdigest()[:8]}",
-                                    category="tool_optimization",
-                                    priority="low",
-                                    title=f"Review imports in {os.path.basename(filepath)}",
-                                    description=f"File has {len(import_lines)} imports - check for unused ones",
-                                    impact_score=0.3,
-                                    complexity="low",
-                                    affected_files=[filepath],
-                                    implementation_plan={
-                                        'action': 'review_imports',
-                                        'file_path': filepath,
-                                        'import_count': len(import_lines)
-                                    }
-                                ))
-
-                        except Exception as file_e:
-                            logger.warning(f"Could not analyze {filepath}: {file_e}")
-
-        except Exception as e:
-            logger.error(f"Performance bottleneck analysis failed: {e}")
-
-        return opportunities
-
-    def _analyze_internal_security(self) -> List[Opportunity]:
-        """Analyze security of existing components"""
-        opportunities = []
-
-        try:
-            # Check for security issues in existing code
-            for root, dirs, files in os.walk('.'):
-                for file in files:
-                    if file.endswith('.py'):
-                        filepath = os.path.join(root, file)
-                        try:
-                            with open(filepath, 'r', encoding='utf-8') as f:
-                                content = f.read()
-
-                            lines = content.splitlines()
-
-                            # Check for hardcoded secrets
-                            for i, line in enumerate(lines):
-                                if any(secret in line.lower() for secret in ['password', 'secret', 'key', 'token']):
-                                    if '=' in line and ('"' in line or "'" in line):
-                                        opportunities.append(Opportunity(
-                                            opportunity_id=f"security_secret_{filepath}_{i}_{hashlib.md5(line.encode()).hexdigest()[:8]}",
-                                            category="internal_improvement",
-                                            priority="high",
-                                            title=f"Review potential secret in {os.path.basename(filepath)}",
-                                            description=f"Line {i+1} may contain a hardcoded secret",
-                                            impact_score=0.9,
-                                            complexity="medium",
-                                            affected_files=[filepath],
-                                            implementation_plan={
-                                                'action': 'review_secret',
-                                                'file_path': filepath,
-                                                'line_number': i+1
-                                            }
-                                        ))
-
-                            # Check for eval/exec usage
-                            for i, line in enumerate(lines):
-                                if 'eval(' in line or 'exec(' in line:
-                                    opportunities.append(Opportunity(
-                                        opportunity_id=f"security_eval_{filepath}_{i}_{hashlib.md5(line.encode()).hexdigest()[:8]}",
-                                        category="internal_improvement",
-                                        priority="critical",
-                                        title=f"Review eval/exec usage in {os.path.basename(filepath)}",
-                                        description=f"Line {i+1} uses eval/exec which is a security risk",
-                                        impact_score=0.95,
-                                        complexity="high",
-                                        affected_files=[filepath],
-                                        implementation_plan={
-                                                'action': 'review_eval_exec',
-                                                'file_path': filepath,
-                                                'line_number': i+1
-                                            }
-                                        ))
-
-                        except Exception as file_e:
-                            logger.warning(f"Could not analyze {filepath}: {file_e}")
-
-        except Exception as e:
-            logger.error(f"Internal security analysis failed: {e}")
-
-        return opportunities
-
-    def _detect_circular_imports(self) -> List[Opportunity]:
-        """Detect potential circular import issues"""
-        opportunities = []
-
-        try:
-            # Simple circular import detection
-            import_graph = {}
-
-            for root, dirs, files in os.walk('.'):
-                for file in files:
-                    if file.endswith('.py') and not file.startswith('__'):
-                        filepath = os.path.join(root, file)
-                        try:
-                            with open(filepath, 'r', encoding='utf-8') as f:
-                                content = f.read()
-
-                            # Extract imports
-                            imports = []
-                            for line in content.splitlines():
-                                if line.startswith('from ') and 'import' in line:
-                                    # Extract module name
-                                    parts = line.split()
-                                    if len(parts) >= 2:
-                                        module = parts[1].split('.')[0]
-                                        imports.append(module)
-
-                            if imports:
-                                import_graph[os.path.basename(filepath)] = imports
-
-                        except Exception as file_e:
-                            logger.warning(f"Could not analyze imports in {filepath}: {file_e}")
-
-            # Check for potential circular imports (simplified)
-            for file, imports in import_graph.items():
-                for imp in imports:
-                    if imp in import_graph and file in import_graph.get(imp, []):
-                        opportunities.append(Opportunity(
-                            opportunity_id=f"circular_import_{file}_{imp}_{hashlib.md5(f'{file}{imp}'.encode()).hexdigest()[:8]}",
-                            category="internal_improvement",
-                            priority="medium",
-                            title=f"Review potential circular import: {file} ↔ {imp}",
-                            description=f"Files {file} and {imp} may have circular import dependency",
-                            impact_score=0.6,
-                            complexity="medium",
-                            affected_files=[file, imp],
-                            implementation_plan={
-                                'action': 'review_circular_import',
-                                'files': [file, imp]
-                            }
-                        ))
-
-        except Exception as e:
-            logger.error(f"Circular import detection failed: {e}")
-
-        return opportunities
+        return prioritized
 
     def _continuous_implementation(self):
-        """Continuously implement opportunities with enhanced error resilience"""
+        """Continuously implement opportunities with enhanced error resilience and learning"""
         consecutive_failures = 0
         max_consecutive_failures = 10
 
@@ -4982,10 +4677,14 @@ class AutonomousEvolutionEngine:
                 # Get next opportunity
                 priority, opportunity = self.implementation_queue.get(timeout=1)
 
+                # Record start time for learning
+                implementation_start = time.time()
+
                 # Implement it with comprehensive error handling
                 try:
                     implementation_result = self.implementer.implement_opportunity(opportunity)
                     success = implementation_result.get('success', False)
+                    implementation_time = time.time() - implementation_start
 
                     implementations_successful = 1 if success else 0
 
@@ -5010,6 +4709,9 @@ class AutonomousEvolutionEngine:
                         validation = implementation_result['validation']
                         logger.info(f"Validation for {opportunity.title}: {validation.get('risk_level', 'unknown')} risk, valid: {validation.get('valid', False)}")
 
+                    # Record outcome for learning system
+                    self._record_implementation_outcome(opportunity, success, implementation_time, implementation_result)
+
                     # Update performance metrics with implementation results
                     self._update_performance_metrics(0, 0, implementations_successful)
 
@@ -5018,9 +4720,17 @@ class AutonomousEvolutionEngine:
                     logger.info("Continuing with next opportunity despite JSON error")
                     consecutive_failures += 1
 
+                    # Record failed outcome
+                    implementation_time = time.time() - implementation_start
+                    self._record_implementation_outcome(opportunity, False, implementation_time, {'error': str(e)})
+
                 except Exception as impl_e:
                     logger.error(f"Implementation error for {opportunity.title}: {impl_e}")
                     consecutive_failures += 1
+
+                    # Record failed outcome
+                    implementation_time = time.time() - implementation_start
+                    self._record_implementation_outcome(opportunity, False, implementation_time, {'error': str(impl_e)})
 
                     # Try to log the failure for debugging
                     try:
