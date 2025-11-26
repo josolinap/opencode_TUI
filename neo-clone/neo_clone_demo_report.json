@@ -1,0 +1,60 @@
+{
+  "demo_metadata": {
+    "total_duration": 5.6869683265686035,
+    "scenarios_attempted": 4,
+    "scenarios_successful": 4,
+    "success_rate": 100.0,
+    "timestamp": 1764120829.923631
+  },
+  "scenario_results": {
+    "search_engine": {
+      "success": true,
+      "duration": 5.39012885093689,
+      "actions_completed": 3,
+      "data_points_extracted": 2,
+      "error": null
+    },
+    "form_filling": {
+      "success": true,
+      "duration": 5.635601758956909,
+      "actions_completed": 7,
+      "data_points_extracted": 1,
+      "error": null
+    },
+    "data_extraction": {
+      "success": true,
+      "duration": 2.111557722091675,
+      "actions_completed": 5,
+      "data_points_extracted": 4,
+      "error": null
+    },
+    "workflow": {
+      "success": true,
+      "duration": 5.301411390304565,
+      "actions_completed": 4,
+      "data_points_extracted": 3,
+      "error": null
+    }
+  },
+  "capabilities_demonstrated": [
+    "Image detection",
+    "Form analysis",
+    "Search interaction",
+    "Link extraction",
+    "Intelligent filling",
+    "Multi-step automation",
+    "Web navigation",
+    "Form submission",
+    "Content analysis",
+    "Data processing",
+    "Report generation",
+    "Result extraction"
+  ],
+  "performance_metrics": {
+    "total_actions_completed": 19,
+    "average_scenario_duration": 4.60967493057251,
+    "fastest_scenario": "data_extraction",
+    "slowest_scenario": "form_filling"
+  },
+  "data_extracted_summary": {}
+}

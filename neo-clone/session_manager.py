@@ -1,0 +1,703 @@
+#!/usr/bin/env python3
+"""
+🔐 Neo-Clone Session Manager
+=============================
+
+Advanced session management and authentication system for maintaining
+persistent login states, handling multiple accounts, and managing
+browser profiles across different websites.
+"""
+
+import asyncio
+import json
+import logging
+import time
+import os
+import pickle
+import hashlib
+import base64
+from typing import Dict, List, Optional, Any, Union, Tuple
+from dataclasses import dataclass, field, asdict
+from enum import Enum
+import uuid
+import tempfile
+import threading
+from datetime import datetime, timedelta
+import sqlite3
+
+# Cryptography for secure storage
+try:
+    from cryptography.fernet import Fernet
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+except ImportError:
+    print("Installing cryptography dependencies...")
+    os.system("pip install cryptography")
+    from cryptography.fernet import Fernet
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+class SessionStatus(Enum):
+    """Session status types."""
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+    EXPIRED = "expired"
+    SUSPENDED = "suspended"
+    ERROR = "error"
+
+
+class AuthMethod(Enum):
+    """Authentication methods."""
+    USERNAME_PASSWORD = "username_password"
+    OAUTH = "oauth"
+    SSO = "sso"
+    API_KEY = "api_key"
+    CERTIFICATE = "certificate"
+    BIOMETRIC = "biometric"
+
+
+@dataclass
+class Credentials:
+    """Secure credential storage."""
+    auth_method: AuthMethod
+    username: Optional[str] = None
+    password: Optional[str] = None
+    api_key: Optional[str] = None
+    token: Optional[str] = None
+    oauth_provider: Optional[str] = None
+    totp_secret: Optional[str] = None
+    certificate_path: Optional[str] = None
+    additional_data: Dict[str, Any] = field(default_factory=dict)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary (excluding sensitive data)."""
+        return {
+            "auth_method": self.auth_method.value,
+            "username": self.username,
+            "has_password": bool(self.password),
+            "has_api_key": bool(self.api_key),
+            "has_token": bool(self.token),
+            "oauth_provider": self.oauth_provider,
+            "has_totp_secret": bool(self.totp_secret),
+            "certificate_path": self.certificate_path,
+            "additional_data": self.additional_data,
+        }
+
+
+@dataclass
+class SessionData:
+    """Session information."""
+    session_id: str
+    site_url: str
+    site_name: str
+    credentials: Credentials
+    status: SessionStatus = SessionStatus.INACTIVE
+    created_at: float = field(default_factory=time.time)
+    last_accessed: float = field(default_factory=time.time)
+    expires_at: Optional[float] = None
+    cookies: List[Dict[str, Any]] = field(default_factory=list)
+    local_storage: Dict[str, str] = field(default_factory=dict)
+    session_storage: Dict[str, str] = field(default_factory=dict)
+    user_agent: Optional[str] = None
+    proxy: Optional[str] = None
+    browser_profile: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def is_expired(self) -> bool:
+        """Check if session is expired."""
+        if self.expires_at is None:
+            return False
+        return time.time() > self.expires_at
+    
+    def is_active(self) -> bool:
+        """Check if session is active."""
+        return (self.status == SessionStatus.ACTIVE and 
+                not self.is_expired() and
+                time.time() - self.last_accessed < 3600)  # 1 hour timeout
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "session_id": self.session_id,
+            "site_url": self.site_url,
+            "site_name": self.site_name,
+            "credentials": self.credentials.to_dict(),
+            "status": self.status.value,
+            "created_at": self.created_at,
+            "last_accessed": self.last_accessed,
+            "expires_at": self.expires_at,
+            "cookies_count": len(self.cookies),
+            "local_storage_size": len(self.local_storage),
+            "session_storage_size": len(self.session_storage),
+            "user_agent": self.user_agent,
+            "proxy": self.proxy,
+            "browser_profile": self.browser_profile,
+            "metadata": self.metadata,
+        }
+
+
+class SecureStorage:
+    """Encrypted storage for sensitive data."""
+    
+    def __init__(self, master_password: str = None):
+        self.master_password = master_password or self._generate_master_password()
+        self.cipher_suite = self._create_cipher_suite()
+        self.storage_dir = os.path.join(os.path.dirname(__file__), "data", "sessions")
+        os.makedirs(self.storage_dir, exist_ok=True)
+        
+        logger.info("SecureStorage initialized")
+    
+    def _generate_master_password(self) -> str:
+        """Generate a random master password."""
+        return os.urandom(32).hex()
+    
+    def _create_cipher_suite(self) -> Fernet:
+        """Create encryption cipher suite."""
+        password = self.master_password.encode()
+        salt = b'neo_clone_salt'  # In production, use a proper salt
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=salt,
+            iterations=100000,
+        )
+        key = base64.urlsafe_b64encode(kdf.derive(password))
+        return Fernet(key)
+    
+    def encrypt_data(self, data: str) -> str:
+        """Encrypt data."""
+        encrypted_data = self.cipher_suite.encrypt(data.encode())
+        return base64.urlsafe_b64encode(encrypted_data).decode()
+    
+    def decrypt_data(self, encrypted_data: str) -> str:
+        """Decrypt data."""
+        encrypted_bytes = base64.urlsafe_b64decode(encrypted_data.encode())
+        decrypted_data = self.cipher_suite.decrypt(encrypted_bytes)
+        return decrypted_data.decode()
+    
+    def save_session(self, session: SessionData) -> bool:
+        """Save session data securely."""
+        try:
+            session_file = os.path.join(self.storage_dir, f"{session.session_id}.session")
+            
+            # Serialize session data
+            session_dict = asdict(session)
+            
+            # Encrypt sensitive fields
+            if session.credentials.password:
+                session_dict["credentials"]["password"] = self.encrypt_data(session.credentials.password)
+            if session.credentials.api_key:
+                session_dict["credentials"]["api_key"] = self.encrypt_data(session.credentials.api_key)
+            if session.credentials.token:
+                session_dict["credentials"]["token"] = self.encrypt_data(session.credentials.token)
+            if session.credentials.totp_secret:
+                session_dict["credentials"]["totp_secret"] = self.encrypt_data(session.credentials.totp_secret)
+            
+            # Save to file
+            with open(session_file, 'wb') as f:
+                pickle.dump(session_dict, f)
+            
+            logger.info(f"Session {session.session_id} saved securely")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to save session: {str(e)}")
+            return False
+    
+    def load_session(self, session_id: str) -> Optional[SessionData]:
+        """Load session data securely."""
+        try:
+            session_file = os.path.join(self.storage_dir, f"{session_id}.session")
+            
+            if not os.path.exists(session_file):
+                return None
+            
+            # Load from file
+            with open(session_file, 'rb') as f:
+                session_dict = pickle.load(f)
+            
+            # Decrypt sensitive fields
+            credentials_dict = session_dict["credentials"]
+            if credentials_dict.get("password"):
+                credentials_dict["password"] = self.decrypt_data(credentials_dict["password"])
+            if credentials_dict.get("api_key"):
+                credentials_dict["api_key"] = self.decrypt_data(credentials_dict["api_key"])
+            if credentials_dict.get("token"):
+                credentials_dict["token"] = self.decrypt_data(credentials_dict["token"])
+            if credentials_dict.get("totp_secret"):
+                credentials_dict["totp_secret"] = self.decrypt_data(credentials_dict["totp_secret"])
+            
+            # Reconstruct objects
+            credentials = Credentials(**credentials_dict)
+            session_data = SessionData(
+                session_id=session_dict["session_id"],
+                site_url=session_dict["site_url"],
+                site_name=session_dict["site_name"],
+                credentials=credentials,
+                status=SessionStatus(session_dict["status"]),
+                created_at=session_dict["created_at"],
+                last_accessed=session_dict["last_accessed"],
+                expires_at=session_dict.get("expires_at"),
+                cookies=session_dict.get("cookies", []),
+                local_storage=session_dict.get("local_storage", {}),
+                session_storage=session_dict.get("session_storage", {}),
+                user_agent=session_dict.get("user_agent"),
+                proxy=session_dict.get("proxy"),
+                browser_profile=session_dict.get("browser_profile"),
+                metadata=session_dict.get("metadata", {}),
+            )
+            
+            logger.info(f"Session {session_id} loaded successfully")
+            return session_data
+            
+        except Exception as e:
+            logger.error(f"Failed to load session: {str(e)}")
+            return None
+    
+    def delete_session(self, session_id: str) -> bool:
+        """Delete session data."""
+        try:
+            session_file = os.path.join(self.storage_dir, f"{session_id}.session")
+            
+            if os.path.exists(session_file):
+                os.remove(session_file)
+                logger.info(f"Session {session_id} deleted")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Failed to delete session: {str(e)}")
+            return False
+    
+    def list_sessions(self) -> List[str]:
+        """List all stored session IDs."""
+        try:
+            session_files = [f for f in os.listdir(self.storage_dir) if f.endswith('.session')]
+            session_ids = [f.replace('.session', '') for f in session_files]
+            return session_ids
+            
+        except Exception as e:
+            logger.error(f"Failed to list sessions: {str(e)}")
+            return []
+
+
+class AuthenticationManager:
+    """Advanced authentication management."""
+    
+    def __init__(self, secure_storage: SecureStorage):
+        self.secure_storage = secure_storage
+        self.active_sessions: Dict[str, SessionData] = {}
+        self.auth_history = []
+        
+        logger.info("AuthenticationManager initialized")
+    
+    def create_session(self, site_url: str, site_name: str, credentials: Credentials,
+                      expires_hours: int = 24) -> Optional[str]:
+        """Create a new authentication session."""
+        try:
+            session_id = str(uuid.uuid4())
+            
+            # Calculate expiration time
+            expires_at = time.time() + (expires_hours * 3600) if expires_hours > 0 else None
+            
+            # Create session data
+            session_data = SessionData(
+                session_id=session_id,
+                site_url=site_url,
+                site_name=site_name,
+                credentials=credentials,
+                status=SessionStatus.INACTIVE,
+                expires_at=expires_at
+            )
+            
+            # Save session
+            if self.secure_storage.save_session(session_data):
+                self.active_sessions[session_id] = session_data
+                
+                self.auth_history.append({
+                    "action": "session_created",
+                    "session_id": session_id,
+                    "site_name": site_name,
+                    "timestamp": time.time(),
+                    "success": True
+                })
+                
+                logger.info(f"Session created for {site_name}: {session_id}")
+                return session_id
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Failed to create session: {str(e)}")
+            return None
+    
+    def activate_session(self, session_id: str, browser_context=None) -> bool:
+        """Activate a session and restore authentication state."""
+        try:
+            session_data = self.get_session(session_id)
+            if not session_data:
+                return False
+            
+            # Check if session is expired
+            if session_data.is_expired():
+                session_data.status = SessionStatus.EXPIRED
+                self.secure_storage.save_session(session_data)
+                return False
+            
+            # Restore cookies if browser context is provided
+            if browser_context and session_data.cookies:
+                self._restore_cookies(browser_context, session_data.cookies)
+            
+            # Restore local storage if browser context is provided
+            if browser_context and session_data.local_storage:
+                self._restore_local_storage(browser_context, session_data.local_storage)
+            
+            # Update session status
+            session_data.status = SessionStatus.ACTIVE
+            session_data.last_accessed = time.time()
+            
+            # Save updated session
+            self.secure_storage.save_session(session_data)
+            self.active_sessions[session_id] = session_data
+            
+            self.auth_history.append({
+                "action": "session_activated",
+                "session_id": session_id,
+                "site_name": session_data.site_name,
+                "timestamp": time.time(),
+                "success": True
+            })
+            
+            logger.info(f"Session activated: {session_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to activate session: {str(e)}")
+            return False
+    
+    def deactivate_session(self, session_id: str, browser_context=None) -> bool:
+        """Deactivate a session and save current state."""
+        try:
+            session_data = self.get_session(session_id)
+            if not session_data:
+                return False
+            
+            # Save current state if browser context is provided
+            if browser_context:
+                session_data.cookies = self._extract_cookies(browser_context)
+                session_data.local_storage = self._extract_local_storage(browser_context)
+            
+            # Update session status
+            session_data.status = SessionStatus.INACTIVE
+            session_data.last_accessed = time.time()
+            
+            # Save updated session
+            self.secure_storage.save_session(session_data)
+            
+            # Remove from active sessions
+            if session_id in self.active_sessions:
+                del self.active_sessions[session_id]
+            
+            self.auth_history.append({
+                "action": "session_deactivated",
+                "session_id": session_id,
+                "site_name": session_data.site_name,
+                "timestamp": time.time(),
+                "success": True
+            })
+            
+            logger.info(f"Session deactivated: {session_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to deactivate session: {str(e)}")
+            return False
+    
+    def get_session(self, session_id: str) -> Optional[SessionData]:
+        """Get session data."""
+        # Check active sessions first
+        if session_id in self.active_sessions:
+            return self.active_sessions[session_id]
+        
+        # Load from storage
+        session_data = self.secure_storage.load_session(session_id)
+        if session_data:
+            self.active_sessions[session_id] = session_data
+        
+        return session_data
+    
+    def delete_session(self, session_id: str) -> bool:
+        """Delete a session completely."""
+        try:
+            # Remove from active sessions
+            if session_id in self.active_sessions:
+                del self.active_sessions[session_id]
+            
+            # Delete from storage
+            success = self.secure_storage.delete_session(session_id)
+            
+            if success:
+                self.auth_history.append({
+                    "action": "session_deleted",
+                    "session_id": session_id,
+                    "timestamp": time.time(),
+                    "success": True
+                })
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Failed to delete session: {str(e)}")
+            return False
+    
+    def list_sessions(self, status_filter: SessionStatus = None) -> List[SessionData]:
+        """List all sessions with optional status filter."""
+        sessions = []
+        
+        # Get all session IDs
+        session_ids = self.secure_storage.list_sessions()
+        
+        for session_id in session_ids:
+            session_data = self.get_session(session_id)
+            if session_data:
+                if status_filter is None or session_data.status == status_filter:
+                    sessions.append(session_data)
+        
+        return sessions
+    
+    def cleanup_expired_sessions(self) -> int:
+        """Clean up expired sessions."""
+        try:
+            expired_count = 0
+            session_ids = self.secure_storage.list_sessions()
+            
+            for session_id in session_ids:
+                session_data = self.get_session(session_id)
+                if session_data and session_data.is_expired():
+                    self.delete_session(session_id)
+                    expired_count += 1
+            
+            logger.info(f"Cleaned up {expired_count} expired sessions")
+            return expired_count
+            
+        except Exception as e:
+            logger.error(f"Failed to cleanup expired sessions: {str(e)}")
+            return 0
+    
+    def _extract_cookies(self, browser_context) -> List[Dict[str, Any]]:
+        """Extract cookies from browser context."""
+        try:
+            # This would need to be implemented based on the browser automation framework
+            # For now, return empty list
+            return []
+            
+        except Exception as e:
+            logger.error(f"Failed to extract cookies: {str(e)}")
+            return []
+    
+    def _restore_cookies(self, browser_context, cookies: List[Dict[str, Any]]):
+        """Restore cookies to browser context."""
+        try:
+            # This would need to be implemented based on the browser automation framework
+            pass
+            
+        except Exception as e:
+            logger.error(f"Failed to restore cookies: {str(e)}")
+    
+    def _extract_local_storage(self, browser_context) -> Dict[str, str]:
+        """Extract local storage from browser context."""
+        try:
+            # This would need to be implemented based on the browser automation framework
+            return {}
+            
+        except Exception as e:
+            logger.error(f"Failed to extract local storage: {str(e)}")
+            return {}
+    
+    def _restore_local_storage(self, browser_context, local_storage: Dict[str, str]):
+        """Restore local storage to browser context."""
+        try:
+            # This would need to be implemented based on the browser automation framework
+            pass
+            
+        except Exception as e:
+            logger.error(f"Failed to restore local storage: {str(e)}")
+    
+    def get_auth_statistics(self) -> Dict[str, Any]:
+        """Get authentication statistics."""
+        try:
+            all_sessions = self.list_sessions()
+            
+            stats = {
+                "total_sessions": len(all_sessions),
+                "active_sessions": len([s for s in all_sessions if s.is_active()]),
+                "inactive_sessions": len([s for s in all_sessions if s.status == SessionStatus.INACTIVE]),
+                "expired_sessions": len([s for s in all_sessions if s.is_expired()]),
+                "sessions_by_site": {},
+                "auth_methods": {},
+                "recent_activity": self.auth_history[-10:]  # Last 10 activities
+            }
+            
+            # Group by site
+            for session in all_sessions:
+                site_name = session.site_name
+                if site_name not in stats["sessions_by_site"]:
+                    stats["sessions_by_site"][site_name] = 0
+                stats["sessions_by_site"][site_name] += 1
+            
+            # Group by auth method
+            for session in all_sessions:
+                auth_method = session.credentials.auth_method.value
+                if auth_method not in stats["auth_methods"]:
+                    stats["auth_methods"][auth_method] = 0
+                stats["auth_methods"][auth_method] += 1
+            
+            return stats
+            
+        except Exception as e:
+            logger.error(f"Failed to get auth statistics: {str(e)}")
+            return {}
+
+
+class SessionManager:
+    """Main session management orchestrator."""
+    
+    def __init__(self, master_password: str = None):
+        self.secure_storage = SecureStorage(master_password)
+        self.auth_manager = AuthenticationManager(self.secure_storage)
+        
+        # Start cleanup thread
+        self.cleanup_thread = threading.Thread(target=self._periodic_cleanup, daemon=True)
+        self.cleanup_thread.start()
+        
+        logger.info("SessionManager initialized")
+    
+    def _periodic_cleanup(self):
+        """Periodically clean up expired sessions."""
+        while True:
+            try:
+                time.sleep(3600)  # Run every hour
+                self.auth_manager.cleanup_expired_sessions()
+            except Exception as e:
+                logger.error(f"Error in periodic cleanup: {str(e)}")
+    
+    def create_login_session(self, site_url: str, site_name: str, username: str, 
+                           password: str, expires_hours: int = 24) -> Optional[str]:
+        """Create a login session with username/password."""
+        credentials = Credentials(
+            auth_method=AuthMethod.USERNAME_PASSWORD,
+            username=username,
+            password=password
+        )
+        
+        return self.auth_manager.create_session(site_url, site_name, credentials, expires_hours)
+    
+    def create_oauth_session(self, site_url: str, site_name: str, oauth_provider: str,
+                           token: str, expires_hours: int = 24) -> Optional[str]:
+        """Create an OAuth session."""
+        credentials = Credentials(
+            auth_method=AuthMethod.OAUTH,
+            oauth_provider=oauth_provider,
+            token=token
+        )
+        
+        return self.auth_manager.create_session(site_url, site_name, credentials, expires_hours)
+    
+    def create_api_session(self, site_url: str, site_name: str, api_key: str,
+                         expires_hours: int = 24) -> Optional[str]:
+        """Create an API key session."""
+        credentials = Credentials(
+            auth_method=AuthMethod.API_KEY,
+            api_key=api_key
+        )
+        
+        return self.auth_manager.create_session(site_url, site_name, credentials, expires_hours)
+    
+    def get_session_credentials(self, session_id: str) -> Optional[Credentials]:
+        """Get credentials for a session."""
+        session_data = self.auth_manager.get_session(session_id)
+        if session_data:
+            return session_data.credentials
+        return None
+    
+    def activate_session(self, session_id: str, browser_context=None) -> bool:
+        """Activate a session."""
+        return self.auth_manager.activate_session(session_id, browser_context)
+    
+    def deactivate_session(self, session_id: str, browser_context=None) -> bool:
+        """Deactivate a session."""
+        return self.auth_manager.deactivate_session(session_id, browser_context)
+    
+    def delete_session(self, session_id: str) -> bool:
+        """Delete a session."""
+        return self.auth_manager.delete_session(session_id)
+    
+    def list_sessions(self) -> List[Dict[str, Any]]:
+        """List all sessions."""
+        sessions = self.auth_manager.list_sessions()
+        return [session.to_dict() for session in sessions]
+    
+    def get_session_summary(self) -> Dict[str, Any]:
+        """Get session management summary."""
+        return self.auth_manager.get_auth_statistics()
+
+
+# Example usage
+async def main():
+    """Example usage of the SessionManager."""
+    
+    # Initialize session manager
+    session_manager = SessionManager()
+    
+    # Create a login session
+    print("🔐 Creating login session...")
+    session_id = session_manager.create_login_session(
+        site_url="https://example.com",
+        site_name="Example Site",
+        username="testuser",
+        password="testpass123",
+        expires_hours=24
+    )
+    
+    if session_id:
+        print(f"Session created: {session_id}")
+        
+        # Get session credentials
+        credentials = session_manager.get_session_credentials(session_id)
+        if credentials:
+            print(f"Username: {credentials.username}")
+            print(f"Auth method: {credentials.auth_method.value}")
+        
+        # Activate session
+        print("🚀 Activating session...")
+        success = session_manager.activate_session(session_id)
+        print(f"Activation successful: {success}")
+        
+        # List all sessions
+        print("📋 Listing all sessions...")
+        sessions = session_manager.list_sessions()
+        for session in sessions:
+            print(f"  - {session['site_name']}: {session['status']} (ID: {session['session_id'][:8]}...)")
+        
+        # Get session summary
+        print("📊 Session summary:")
+        summary = session_manager.get_session_summary()
+        print(json.dumps(summary, indent=2))
+        
+        # Deactivate session
+        print("🔚 Deactivating session...")
+        success = session_manager.deactivate_session(session_id)
+        print(f"Deactivation successful: {success}")
+    
+    else:
+        print("❌ Failed to create session")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

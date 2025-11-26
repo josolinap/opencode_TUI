@@ -1,0 +1,962 @@
+#!/usr/bin/env python3
+"""
+🧠 Neo-Clone Form Intelligence Engine
+=====================================
+
+Advanced form interaction and data extraction system with AI-powered
+field detection, validation handling, and intelligent data mapping.
+"""
+
+import asyncio
+import json
+import logging
+import time
+import re
+import base64
+import os
+from typing import Dict, List, Optional, Any, Union, Tuple
+from dataclasses import dataclass, field
+from enum import Enum
+import uuid
+import tempfile
+
+# HTML parsing and analysis
+try:
+    from bs4 import BeautifulSoup, Tag
+    import lxml
+except ImportError:
+    print("Installing HTML parsing dependencies...")
+    os.system("pip install beautifulsoup4 lxml")
+    from bs4 import BeautifulSoup, Tag
+    import lxml
+
+# Machine learning for pattern recognition
+try:
+    import numpy as np
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity
+except ImportError:
+    print("Installing ML dependencies...")
+    os.system("pip install numpy scikit-learn")
+    import numpy as np
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity
+
+# OCR for image-based forms
+try:
+    import pytesseract
+    from PIL import Image
+except ImportError:
+    print("Installing OCR dependencies...")
+    os.system("pip install pytesseract pillow")
+    import pytesseract
+    from PIL import Image
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+class FieldType(Enum):
+    """Supported form field types."""
+    TEXT = "text"
+    EMAIL = "email"
+    PASSWORD = "password"
+    NUMBER = "number"
+    PHONE = "tel"
+    URL = "url"
+    DATE = "date"
+    SELECT = "select"
+    CHECKBOX = "checkbox"
+    RADIO = "radio"
+    TEXTAREA = "textarea"
+    FILE = "file"
+    HIDDEN = "hidden"
+    SUBMIT = "submit"
+    BUTTON = "button"
+    UNKNOWN = "unknown"
+
+
+class ValidationType(Enum):
+    """Form validation types."""
+    REQUIRED = "required"
+    EMAIL_FORMAT = "email_format"
+    PHONE_FORMAT = "phone_format"
+    MIN_LENGTH = "min_length"
+    MAX_LENGTH = "max_length"
+    PATTERN = "pattern"
+    NUMBER_RANGE = "number_range"
+    CUSTOM = "custom"
+
+
+@dataclass
+class FieldInfo:
+    """Information about a form field."""
+    selector: str
+    field_type: FieldType
+    name: Optional[str] = None
+    id: Optional[str] = None
+    label: Optional[str] = None
+    placeholder: Optional[str] = None
+    value: Optional[str] = None
+    required: bool = False
+    disabled: bool = False
+    readonly: bool = False
+    options: List[Dict[str, str]] = field(default_factory=list)
+    validation_rules: List[Dict[str, Any]] = field(default_factory=list)
+    confidence_score: float = 0.0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "selector": self.selector,
+            "field_type": self.field_type.value,
+            "name": self.name,
+            "id": self.id,
+            "label": self.label,
+            "placeholder": self.placeholder,
+            "value": self.value,
+            "required": self.required,
+            "disabled": self.disabled,
+            "readonly": self.readonly,
+            "options": self.options,
+            "validation_rules": self.validation_rules,
+            "confidence_score": self.confidence_score,
+        }
+
+
+@dataclass
+class FormInfo:
+    """Information about a form."""
+    selector: str
+    action: Optional[str] = None
+    method: Optional[str] = None
+    fields: List[FieldInfo] = field(default_factory=list)
+    submit_button: Optional[str] = None
+    confidence_score: float = 0.0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "selector": self.selector,
+            "action": self.action,
+            "method": self.method,
+            "fields": [field.to_dict() for field in self.fields],
+            "submit_button": self.submit_button,
+            "confidence_score": self.confidence_score,
+        }
+
+
+class FieldClassifier:
+    """AI-powered field type classification."""
+    
+    def __init__(self):
+        # Common field patterns
+        self.patterns = {
+            FieldType.EMAIL: [
+                r'email', r'e-mail', r'mail', r'username', r'user_id', r'login'
+            ],
+            FieldType.PASSWORD: [
+                r'password', r'passwd', r'pwd', r'pass', r'secret'
+            ],
+            FieldType.PHONE: [
+                r'phone', r'telephone', r'mobile', r'cell', r'contact'
+            ],
+            FieldType.NAME: [
+                r'name', r'full_name', r'firstname', r'lastname', r'fname', r'lname'
+            ],
+            FieldType.ADDRESS: [
+                r'address', r'street', r'city', r'state', r'zip', r'postal'
+            ],
+            FieldType.CREDIT_CARD: [
+                r'card', r'credit', r'cc', r'payment', r'cvv', r'expiry'
+            ],
+        }
+        
+        # Initialize TF-IDF vectorizer
+        self.vectorizer = TfidfVectorizer(
+            ngram_range=(1, 3),
+            stop_words='english',
+            lowercase=True
+        )
+        
+        # Training data (field names -> types)
+        self.training_data = []
+        for field_type, patterns in self.patterns.items():
+            for pattern in patterns:
+                self.training_data.append((pattern, field_type.value))
+        
+        # Fit vectorizer
+        if self.training_data:
+            texts = [item[0] for item in self.training_data]
+            self.vectorizer.fit(texts)
+            self.feature_matrix = self.vectorizer.transform(texts)
+    
+    def classify_field(self, field_name: str, field_id: str = None, 
+                      label: str = None, placeholder: str = None) -> Tuple[FieldType, float]:
+        """Classify field type based on name, id, label, and placeholder."""
+        
+        # Combine all text sources
+        text_sources = [field_name or ""]
+        if field_id:
+            text_sources.append(field_id)
+        if label:
+            text_sources.append(label)
+        if placeholder:
+            text_sources.append(placeholder)
+        
+        combined_text = " ".join(text_sources).lower()
+        
+        # Direct pattern matching
+        for field_type, patterns in self.patterns.items():
+            for pattern in patterns:
+                if re.search(pattern, combined_text):
+                    return field_type, 0.9
+        
+        # ML-based classification
+        try:
+            text_vector = self.vectorizer.transform([combined_text])
+            similarities = cosine_similarity(text_vector, self.feature_matrix)
+            
+            if similarities.max() > 0.3:
+                best_match_idx = similarities.argmax()
+                predicted_type = self.training_data[best_match_idx][1]
+                confidence = float(similarities.max())
+                
+                return FieldType(predicted_type), confidence
+        except:
+            pass
+        
+        # Fallback to HTML type detection
+        if field_name:
+            if 'email' in field_name.lower():
+                return FieldType.EMAIL, 0.7
+            elif 'password' in field_name.lower():
+                return FieldType.PASSWORD, 0.7
+            elif 'phone' in field_name.lower():
+                return FieldType.PHONE, 0.7
+        
+        return FieldType.UNKNOWN, 0.1
+
+
+class FormAnalyzer:
+    """Advanced form analysis and detection."""
+    
+    def __init__(self):
+        self.field_classifier = FieldClassifier()
+        logger.info("FormAnalyzer initialized")
+    
+    def analyze_page(self, html_content: str) -> List[FormInfo]:
+        """Analyze HTML content and extract all forms."""
+        try:
+            soup = BeautifulSoup(html_content, 'lxml')
+            forms = soup.find_all('form')
+            
+            form_infos = []
+            for i, form in enumerate(forms):
+                form_info = self._analyze_form(form, i)
+                if form_info.fields:  # Only include forms with fields
+                    form_infos.append(form_info)
+            
+            logger.info(f"Found {len(form_infos)} forms on the page")
+            return form_infos
+            
+        except Exception as e:
+            logger.error(f"Failed to analyze page: {str(e)}")
+            return []
+    
+    def _analyze_form(self, form_tag: Tag, index: int) -> FormInfo:
+        """Analyze a single form element."""
+        try:
+            # Generate selector
+            form_id = form_tag.get('id')
+            form_class = form_tag.get('class')
+            
+            if form_id:
+                selector = f"form#{form_id}"
+            elif form_class:
+                selector = f"form.{'.'.join(form_class)}"
+            else:
+                selector = f"form:nth-of-type({index + 1})"
+            
+            # Basic form info
+            form_info = FormInfo(
+                selector=selector,
+                action=form_tag.get('action'),
+                method=form_tag.get('method', 'GET')
+            )
+            
+            # Find all input fields
+            fields = []
+            
+            # Input elements
+            inputs = form_tag.find_all('input')
+            for input_tag in inputs:
+                field_info = self._analyze_input_field(input_tag)
+                if field_info:
+                    fields.append(field_info)
+            
+            # Select elements
+            selects = form_tag.find_all('select')
+            for select_tag in selects:
+                field_info = self._analyze_select_field(select_tag)
+                if field_info:
+                    fields.append(field_info)
+            
+            # Textarea elements
+            textareas = form_tag.find_all('textarea')
+            for textarea_tag in textareas:
+                field_info = self._analyze_textarea_field(textarea_tag)
+                if field_info:
+                    fields.append(field_info)
+            
+            # Find submit button
+            submit_button = self._find_submit_button(form_tag)
+            if submit_button:
+                form_info.submit_button = submit_button
+            
+            form_info.fields = fields
+            
+            # Calculate confidence score
+            form_info.confidence_score = self._calculate_form_confidence(form_info)
+            
+            return form_info
+            
+        except Exception as e:
+            logger.error(f"Failed to analyze form: {str(e)}")
+            return FormInfo(selector=f"form:nth-of-type({index + 1})")
+    
+    def _analyze_input_field(self, input_tag: Tag) -> Optional[FieldInfo]:
+        """Analyze an input field."""
+        try:
+            input_type = input_tag.get('type', 'text')
+            input_name = input_tag.get('name')
+            input_id = input_tag.get('id')
+            
+            # Skip hidden fields unless specifically needed
+            if input_type == 'hidden':
+                return None
+            
+            # Find associated label
+            label = self._find_field_label(input_tag)
+            
+            # Classify field type
+            field_type, confidence = self.field_classifier.classify_field(
+                input_name, input_id, label, input_tag.get('placeholder')
+            )
+            
+            # Override with HTML type if it's more specific
+            html_type_mapping = {
+                'email': FieldType.EMAIL,
+                'password': FieldType.PASSWORD,
+                'tel': FieldType.PHONE,
+                'url': FieldType.URL,
+                'number': FieldType.NUMBER,
+                'date': FieldType.DATE,
+                'checkbox': FieldType.CHECKBOX,
+                'radio': FieldType.RADIO,
+                'file': FieldType.FILE,
+                'submit': FieldType.SUBMIT,
+                'button': FieldType.BUTTON,
+            }
+            
+            if input_type in html_type_mapping:
+                field_type = html_type_mapping[input_type]
+                confidence = max(confidence, 0.8)
+            
+            # Generate selector
+            selector = self._generate_field_selector(input_tag)
+            
+            # Extract validation rules
+            validation_rules = self._extract_validation_rules(input_tag)
+            
+            field_info = FieldInfo(
+                selector=selector,
+                field_type=field_type,
+                name=input_name,
+                id=input_id,
+                label=label,
+                placeholder=input_tag.get('placeholder'),
+                value=input_tag.get('value'),
+                required=input_tag.has_attr('required'),
+                disabled=input_tag.has_attr('disabled'),
+                readonly=input_tag.has_attr('readonly'),
+                validation_rules=validation_rules,
+                confidence_score=confidence
+            )
+            
+            return field_info
+            
+        except Exception as e:
+            logger.error(f"Failed to analyze input field: {str(e)}")
+            return None
+    
+    def _analyze_select_field(self, select_tag: Tag) -> Optional[FieldInfo]:
+        """Analyze a select field."""
+        try:
+            select_name = select_tag.get('name')
+            select_id = select_tag.get('id')
+            
+            # Find associated label
+            label = self._find_field_label(select_tag)
+            
+            # Extract options
+            options = []
+            option_tags = select_tag.find_all('option')
+            for option_tag in option_tags:
+                option_value = option_tag.get('value', '')
+                option_text = option_tag.get_text(strip=True)
+                options.append({
+                    "value": option_value,
+                    "text": option_text,
+                    "selected": option_tag.has_attr('selected')
+                })
+            
+            # Generate selector
+            selector = self._generate_field_selector(select_tag)
+            
+            # Extract validation rules
+            validation_rules = self._extract_validation_rules(select_tag)
+            
+            field_info = FieldInfo(
+                selector=selector,
+                field_type=FieldType.SELECT,
+                name=select_name,
+                id=select_id,
+                label=label,
+                options=options,
+                required=select_tag.has_attr('required'),
+                disabled=select_tag.has_attr('disabled'),
+                validation_rules=validation_rules,
+                confidence_score=0.9
+            )
+            
+            return field_info
+            
+        except Exception as e:
+            logger.error(f"Failed to analyze select field: {str(e)}")
+            return None
+    
+    def _analyze_textarea_field(self, textarea_tag: Tag) -> Optional[FieldInfo]:
+        """Analyze a textarea field."""
+        try:
+            textarea_name = textarea_tag.get('name')
+            textarea_id = textarea_tag.get('id')
+            
+            # Find associated label
+            label = self._find_field_label(textarea_tag)
+            
+            # Generate selector
+            selector = self._generate_field_selector(textarea_tag)
+            
+            # Extract validation rules
+            validation_rules = self._extract_validation_rules(textarea_tag)
+            
+            field_info = FieldInfo(
+                selector=selector,
+                field_type=FieldType.TEXTAREA,
+                name=textarea_name,
+                id=textarea_id,
+                label=label,
+                placeholder=textarea_tag.get('placeholder'),
+                value=textarea_tag.get_text(strip=True),
+                required=textarea_tag.has_attr('required'),
+                disabled=textarea_tag.has_attr('disabled'),
+                readonly=textarea_tag.has_attr('readonly'),
+                validation_rules=validation_rules,
+                confidence_score=0.9
+            )
+            
+            return field_info
+            
+        except Exception as e:
+            logger.error(f"Failed to analyze textarea field: {str(e)}")
+            return None
+    
+    def _find_field_label(self, field_tag: Tag) -> Optional[str]:
+        """Find the label associated with a field."""
+        try:
+            # Check for label with 'for' attribute
+            field_id = field_tag.get('id')
+            if field_id:
+                label_tag = field_tag.find_previous('label', {'for': field_id})
+                if label_tag:
+                    return label_tag.get_text(strip=True)
+            
+            # Check for parent label
+            parent_label = field_tag.find_parent('label')
+            if parent_label:
+                return parent_label.get_text(strip=True)
+            
+            # Look for nearby label elements
+            nearby_elements = field_tag.find_all_previous(['label', 'div', 'span'], limit=5)
+            for element in nearby_elements:
+                text = element.get_text(strip=True)
+                if text and len(text) < 100:  # Reasonable label length
+                    return text
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Failed to find field label: {str(e)}")
+            return None
+    
+    def _generate_field_selector(self, field_tag: Tag) -> str:
+        """Generate a reliable CSS selector for a field."""
+        try:
+            # Try ID first
+            field_id = field_tag.get('id')
+            if field_id:
+                return f"#{field_id}"
+            
+            # Try name attribute
+            field_name = field_tag.get('name')
+            if field_name:
+                return f"[name='{field_name}']"
+            
+            # Try class name
+            field_class = field_tag.get('class')
+            if field_class:
+                return f".{'.'.join(field_class)}"
+            
+            # Fallback to tag with position
+            parent = field_tag.parent
+            if parent:
+                siblings = parent.find_all(field_tag.name)
+                if len(siblings) > 1:
+                    index = siblings.index(field_tag) + 1
+                    return f"{field_tag.name}:nth-of-type({index})"
+            
+            return field_tag.name
+            
+        except Exception as e:
+            logger.error(f"Failed to generate field selector: {str(e)}")
+            return field_tag.name
+    
+    def _extract_validation_rules(self, field_tag: Tag) -> List[Dict[str, Any]]:
+        """Extract validation rules from a field."""
+        rules = []
+        
+        try:
+            # Required field
+            if field_tag.has_attr('required'):
+                rules.append({
+                    "type": ValidationType.REQUIRED.value,
+                    "message": "This field is required"
+                })
+            
+            # Pattern validation
+            pattern = field_tag.get('pattern')
+            if pattern:
+                rules.append({
+                    "type": ValidationType.PATTERN.value,
+                    "pattern": pattern,
+                    "message": f"Please match the required format: {pattern}"
+                })
+            
+            # Length validation
+            minlength = field_tag.get('minlength')
+            if minlength:
+                rules.append({
+                    "type": ValidationType.MIN_LENGTH.value,
+                    "min_length": int(minlength),
+                    "message": f"Minimum length is {minlength} characters"
+                })
+            
+            maxlength = field_tag.get('maxlength')
+            if maxlength:
+                rules.append({
+                    "type": ValidationType.MAX_LENGTH.value,
+                    "max_length": int(maxlength),
+                    "message": f"Maximum length is {maxlength} characters"
+                })
+            
+            # Number range
+            min_val = field_tag.get('min')
+            if min_val:
+                rules.append({
+                    "type": ValidationType.NUMBER_RANGE.value,
+                    "min_value": float(min_val),
+                    "message": f"Minimum value is {min_val}"
+                })
+            
+            max_val = field_tag.get('max')
+            if max_val:
+                rules.append({
+                    "type": ValidationType.NUMBER_RANGE.value,
+                    "max_value": float(max_val),
+                    "message": f"Maximum value is {max_val}"
+                })
+            
+            return rules
+            
+        except Exception as e:
+            logger.error(f"Failed to extract validation rules: {str(e)}")
+            return []
+    
+    def _find_submit_button(self, form_tag: Tag) -> Optional[str]:
+        """Find the submit button for a form."""
+        try:
+            # Look for button with type="submit"
+            submit_buttons = form_tag.find_all(['button', 'input'], {'type': 'submit'})
+            if submit_buttons:
+                button = submit_buttons[0]
+                return self._generate_field_selector(button)
+            
+            # Look for button without type (defaults to submit)
+            buttons = form_tag.find_all('button')
+            for button in buttons:
+                if not button.get('type') or button.get('type') == 'submit':
+                    return self._generate_field_selector(button)
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Failed to find submit button: {str(e)}")
+            return None
+    
+    def _calculate_form_confidence(self, form_info: FormInfo) -> float:
+        """Calculate confidence score for form analysis."""
+        if not form_info.fields:
+            return 0.0
+        
+        # Average field confidence
+        field_confidences = [field.confidence_score for field in form_info.fields]
+        avg_field_confidence = sum(field_confidences) / len(field_confidences)
+        
+        # Bonus factors
+        bonus = 0.0
+        
+        # Has submit button
+        if form_info.submit_button:
+            bonus += 0.1
+        
+        # Has action URL
+        if form_info.action:
+            bonus += 0.05
+        
+        # Has required fields
+        has_required = any(field.required for field in form_info.fields)
+        if has_required:
+            bonus += 0.05
+        
+        # Number of fields (more fields = more confidence)
+        if len(form_info.fields) >= 3:
+            bonus += 0.1
+        elif len(form_info.fields) >= 5:
+            bonus += 0.15
+        
+        return min(avg_field_confidence + bonus, 1.0)
+
+
+class DataExtractor:
+    """Advanced data extraction from web pages."""
+    
+    def __init__(self):
+        logger.info("DataExtractor initialized")
+    
+    def extract_structured_data(self, html_content: str, extraction_rules: List[Dict]) -> Dict[str, Any]:
+        """Extract structured data based on rules."""
+        try:
+            soup = BeautifulSoup(html_content, 'lxml')
+            extracted_data = {}
+            
+            for rule in extraction_rules:
+                rule_type = rule.get('type')
+                selector = rule.get('selector')
+                name = rule.get('name')
+                
+                if not selector or not name:
+                    continue
+                
+                try:
+                    elements = soup.select(selector)
+                    
+                    if rule_type == 'text':
+                        if elements:
+                            extracted_data[name] = elements[0].get_text(strip=True)
+                    
+                    elif rule_type == 'attribute':
+                        attribute = rule.get('attribute')
+                        if elements and attribute:
+                            extracted_data[name] = elements[0].get(attribute)
+                    
+                    elif rule_type == 'list':
+                        extracted_data[name] = [
+                            elem.get_text(strip=True) for elem in elements
+                        ]
+                    
+                    elif rule_type == 'table':
+                        if elements:
+                            table_data = self._extract_table_data(elements[0])
+                            extracted_data[name] = table_data
+                    
+                    elif rule_type == 'links':
+                        links = []
+                        for elem in elements:
+                            href = elem.get('href')
+                            text = elem.get_text(strip=True)
+                            if href:
+                                links.append({'url': href, 'text': text})
+                        extracted_data[name] = links
+                
+                except Exception as e:
+                    logger.warning(f"Failed to extract data for rule {name}: {str(e)}")
+                    continue
+            
+            return extracted_data
+            
+        except Exception as e:
+            logger.error(f"Failed to extract structured data: {str(e)}")
+            return {}
+    
+    def _extract_table_data(self, table_tag: Tag) -> List[Dict[str, str]]:
+        """Extract data from a table."""
+        try:
+            rows = table_tag.find_all('tr')
+            if not rows:
+                return []
+            
+            # Check if first row is header
+            first_row = rows[0]
+            has_header = bool(first_row.find_all(['th']))
+            
+            table_data = []
+            
+            if has_header:
+                # Extract headers
+                headers = [th.get_text(strip=True) for th in first_row.find_all(['th'])]
+                
+                # Extract data rows
+                for row in rows[1:]:
+                    cells = [td.get_text(strip=True) for td in row.find_all(['td', 'th'])]
+                    row_data = dict(zip(headers, cells))
+                    table_data.append(row_data)
+            else:
+                # No header, just extract rows as lists
+                for row in rows:
+                    cells = [td.get_text(strip=True) for td in row.find_all(['td', 'th'])]
+                    table_data.append({'cells': cells})
+            
+            return table_data
+            
+        except Exception as e:
+            logger.error(f"Failed to extract table data: {str(e)}")
+            return []
+    
+    def extract_all_links(self, html_content: str, filter_external: bool = True) -> List[Dict[str, str]]:
+        """Extract all links from the page."""
+        try:
+            soup = BeautifulSoup(html_content, 'lxml')
+            links = []
+            
+            for link in soup.find_all('a', href=True):
+                href = link['href']
+                text = link.get_text(strip=True)
+                
+                # Filter external links if requested
+                if filter_external and href.startswith(('http', 'https')):
+                    if not any(domain in href for domain in ['example.com', 'localhost']):
+                        links.append({'url': href, 'text': text})
+                elif not filter_external:
+                    links.append({'url': href, 'text': text})
+            
+            return links
+            
+        except Exception as e:
+            logger.error(f"Failed to extract links: {str(e)}")
+            return []
+    
+    def extract_images(self, html_content: str) -> List[Dict[str, str]]:
+        """Extract all images from the page."""
+        try:
+            soup = BeautifulSoup(html_content, 'lxml')
+            images = []
+            
+            for img in soup.find_all('img', src=True):
+                src = img['src']
+                alt = img.get('alt', '')
+                title = img.get('title', '')
+                
+                images.append({
+                    'src': src,
+                    'alt': alt,
+                    'title': title
+                })
+            
+            return images
+            
+        except Exception as e:
+            logger.error(f"Failed to extract images: {str(e)}")
+            return []
+
+
+class FormIntelligenceEngine:
+    """Main form intelligence orchestrator."""
+    
+    def __init__(self):
+        self.form_analyzer = FormAnalyzer()
+        self.data_extractor = DataExtractor()
+        self.interaction_history = []
+        
+        logger.info("FormIntelligenceEngine initialized")
+    
+    def analyze_forms(self, html_content: str) -> List[FormInfo]:
+        """Analyze all forms in the HTML content."""
+        forms = self.form_analyzer.analyze_page(html_content)
+        
+        self.interaction_history.append({
+            "action": "analyze_forms",
+            "timestamp": time.time(),
+            "forms_found": len(forms),
+            "success": True
+        })
+        
+        return forms
+    
+    def get_best_login_form(self, html_content: str) -> Optional[FormInfo]:
+        """Find the most likely login form on the page."""
+        forms = self.analyze_forms(html_content)
+        
+        if not forms:
+            return None
+        
+        # Score forms for likelihood of being login forms
+        login_scores = []
+        
+        for form in forms:
+            score = 0.0
+            
+            # Look for password fields
+            password_fields = [f for f in form.fields if f.field_type == FieldType.PASSWORD]
+            if password_fields:
+                score += 0.4
+            
+            # Look for email/username fields
+            email_fields = [f for f in form.fields if f.field_type == FieldType.EMAIL]
+            username_fields = [f for f in form.fields if 'user' in (f.name or '').lower()]
+            
+            if email_fields:
+                score += 0.3
+            elif username_fields:
+                score += 0.2
+            
+            # Check form action for login indicators
+            if form.action:
+                action_lower = form.action.lower()
+                if any(keyword in action_lower for keyword in ['login', 'signin', 'auth']):
+                    score += 0.2
+            
+            # Check field names for login indicators
+            field_names = ' '.join([f.name or '' for f in form.fields]).lower()
+            if any(keyword in field_names for keyword in ['login', 'signin', 'auth', 'user', 'pass']):
+                score += 0.1
+            
+            login_scores.append((form, score))
+        
+        # Return the form with highest score
+        if login_scores:
+            best_form = max(login_scores, key=lambda x: x[1])
+            if best_form[1] > 0.3:  # Minimum threshold
+                return best_form[0]
+        
+        return None
+    
+    def extract_data(self, html_content: str, extraction_rules: List[Dict]) -> Dict[str, Any]:
+        """Extract data from the page."""
+        data = self.data_extractor.extract_structured_data(html_content, extraction_rules)
+        
+        self.interaction_history.append({
+            "action": "extract_data",
+            "timestamp": time.time(),
+            "rules_count": len(extraction_rules),
+            "data_extracted": len(data),
+            "success": True
+        })
+        
+        return data
+    
+    def get_interaction_summary(self) -> Dict[str, Any]:
+        """Get summary of all interactions."""
+        return {
+            "total_interactions": len(self.interaction_history),
+            "interaction_history": self.interaction_history[-20:],  # Last 20 interactions
+            "success_rate": len([i for i in self.interaction_history if i.get('success', False)]) / max(len(self.interaction_history), 1)
+        }
+
+
+# Example usage
+async def main():
+    """Example usage of the FormIntelligenceEngine."""
+    
+    # Sample HTML content
+    sample_html = """
+    <html>
+    <body>
+        <form id="login-form" action="/login" method="post">
+            <label for="email">Email Address:</label>
+            <input type="email" id="email" name="email" required placeholder="Enter your email">
+            
+            <label for="password">Password:</label>
+            <input type="password" id="password" name="password" required minlength="8">
+            
+            <button type="submit">Login</button>
+        </form>
+        
+        <form id="contact-form" action="/contact" method="post">
+            <label for="name">Name:</label>
+            <input type="text" id="name" name="name" required>
+            
+            <label for="message">Message:</label>
+            <textarea id="message" name="message" required></textarea>
+            
+            <button type="submit">Send</button>
+        </form>
+    </body>
+    </html>
+    """
+    
+    # Initialize engine
+    engine = FormIntelligenceEngine()
+    
+    # Analyze forms
+    print("🔍 Analyzing forms...")
+    forms = engine.analyze_forms(sample_html)
+    
+    for i, form in enumerate(forms):
+        print(f"\nForm {i + 1}:")
+        print(f"  Selector: {form.selector}")
+        print(f"  Action: {form.action}")
+        print(f"  Method: {form.method}")
+        print(f"  Fields: {len(form.fields)}")
+        print(f"  Confidence: {form.confidence_score:.2f}")
+        
+        for field in form.fields:
+            print(f"    - {field.field_type.value}: {field.name} (confidence: {field.confidence_score:.2f})")
+    
+    # Find login form
+    print("\n🔐 Finding login form...")
+    login_form = engine.get_best_login_form(sample_html)
+    if login_form:
+        print(f"Found login form: {login_form.selector}")
+        print(f"Confidence: {login_form.confidence_score:.2f}")
+    else:
+        print("No login form found")
+    
+    # Extract data
+    print("\n📊 Extracting data...")
+    extraction_rules = [
+        {"type": "text", "selector": "title", "name": "page_title"},
+        {"type": "links", "selector": "a", "name": "all_links"},
+    ]
+    
+    extracted_data = engine.extract_data(sample_html, extraction_rules)
+    print(f"Extracted data: {json.dumps(extracted_data, indent=2)}")
+    
+    # Get interaction summary
+    summary = engine.get_interaction_summary()
+    print(f"\n📈 Interaction summary: {json.dumps(summary, indent=2)}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
