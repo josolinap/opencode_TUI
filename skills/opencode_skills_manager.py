@@ -399,7 +399,8 @@ if __name__ == "__main__":
     print(f"Categories: {list(manager.categories.keys())}")
     
     for category, skills in manager.categories.items():
-        print(f"\n{category.upper()}:")
+        category_name = str(category).upper() if hasattr(category, 'name') else str(category).upper()
+        print(f"\n{category_name}:")
         for skill in skills:
             print(f"  - {skill}")
     

@@ -172,7 +172,7 @@ class SkillsHealthChecker:
         # Skill details
         report.append(f"\nSKILL DETAILS:")
         for skill_name, health in skills_health["skill_details"].items():
-            status_icon = "✅" if health["status"] == "healthy" else "❌"
+            status_icon = "[OK]" if health["status"] == "healthy" else "[FAIL]"
             report.append(f"  {status_icon} {skill_name}: {health['status']}")
             
             if health["status"] == "unhealthy" and "error" in health:
@@ -187,7 +187,7 @@ class SkillsHealthChecker:
         if not deps_health["all_dependencies_available"]:
             report.append(f"\nMISSING DEPENDENCIES:")
             for dep in deps_health["missing_dependencies"]:
-                report.append(f"  ❌ {dep}")
+                report.append(f"  [MISSING] {dep}")
         
         # Overall status
         overall_healthy = (
@@ -195,7 +195,8 @@ class SkillsHealthChecker:
             deps_health["all_dependencies_available"]
         )
         
-        report.append(f"\nOVERALL STATUS: {'✅ HEALTHY' if overall_healthy else '❌ NEEDS ATTENTION'}")
+        status_icon = "HEALTHY" if overall_healthy else "NEEDS ATTENTION"
+        report.append(f"\nOVERALL STATUS: {status_icon}")
         report.append("=" * 60)
         
         return "\n".join(report)
