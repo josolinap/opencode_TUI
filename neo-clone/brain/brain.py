@@ -18,7 +18,7 @@ import time
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass
 from config import Config, get_config
-from skills import SkillsManager
+from skills import OpenCodeSkillsManager as SkillsManager
 from model_analytics import ModelAnalytics
 # Lazy import to avoid circular dependency
 def get_framework_integrator():
@@ -160,7 +160,7 @@ class Brain:
             self.advanced_reasoning_manager = None
 
     def _initialize_autonomous_evolution(self):
-        """Initialize the autonomous evolution engine functions (but don't start automatically)"""
+        """Initialize the autonomous evolution engine functions and start automatic evolution"""
         try:
             # Import functions instead of the full module to avoid global instance issues
             from autonomous_evolution_engine import start_evolution, get_evolution_status, stop_evolution, trigger_scan
@@ -170,7 +170,15 @@ class Brain:
                 'stop': stop_evolution,
                 'trigger_scan': trigger_scan
             }
-            logger.info("[OK] Autonomous Evolution Engine functions initialized (start manually with evolution commands)")
+
+            # Automatically start the evolution engine for enhanced autonomy
+            try:
+                start_evolution()
+                logger.info("[OK] Autonomous Evolution Engine started automatically for continuous self-improvement")
+            except Exception as start_e:
+                logger.warning(f"⚠️ Failed to auto-start evolution engine: {start_e}")
+
+            logger.info("[OK] Autonomous Evolution Engine functions initialized with automatic operation")
         except Exception as e:
             logger.warning(f"⚠️ Failed to initialize Autonomous Evolution Engine functions: {e}")
             self.evolution_functions = None

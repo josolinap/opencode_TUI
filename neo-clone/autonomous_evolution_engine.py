@@ -3494,9 +3494,10 @@ class AutonomousEvolutionEngine:
         logger.info("Autonomous evolution engine stopped")
 
     def _continuous_scanning(self):
-        """Continuously scan for opportunities including internet resources with enhanced resilience"""
+        """Continuously scan for opportunities including internet resources with enhanced resilience and self-triggered evolution"""
         consecutive_scan_failures = 0
         max_consecutive_scan_failures = 5
+        self_evolution_counter = 0
 
         while self.is_running:
             try:
@@ -3568,6 +3569,15 @@ class AutonomousEvolutionEngine:
                         logger.error(f"Error processing opportunities: {process_e}")
                         consecutive_scan_failures += 1
 
+                # Self-triggered evolution: periodically trigger skill evolution and model optimization
+                self_evolution_counter += 1
+                if self_evolution_counter >= 10:  # Every 10 scan cycles (roughly every 10 hours at default interval)
+                    try:
+                        self._trigger_self_evolution()
+                        self_evolution_counter = 0
+                    except Exception as evolution_e:
+                        logger.warning(f"Self-triggered evolution failed: {evolution_e}")
+
                 # Adaptive backoff for scan failures
                 if consecutive_scan_failures > 0:
                     logger.info(f"Scan failure count: {consecutive_scan_failures}")
@@ -3591,6 +3601,201 @@ class AutonomousEvolutionEngine:
                 logger.error(f"Critical scanning loop error: {e}")
                 logger.info("Attempting to continue scanning despite critical error")
                 time.sleep(120)  # Longer pause for critical errors
+
+    def _trigger_self_evolution(self):
+        """Trigger self-evolution processes without user intervention"""
+        logger.info("Initiating self-triggered evolution cycle")
+
+        try:
+            # Automatic backup before major changes
+            self._perform_automatic_backup()
+
+            # Trigger skill evolution if available
+            if hasattr(self, 'skill_evolution_manager') and self.skill_evolution_manager:
+                try:
+                    self.skill_evolution_manager.trigger_evolution()
+                    logger.info("Self-triggered skill evolution completed")
+                except Exception as skill_e:
+                    logger.warning(f"Self-triggered skill evolution failed: {skill_e}")
+
+            # Trigger model optimization if available
+            if hasattr(self, 'model_optimizer') and self.model_optimizer:
+                try:
+                    self.model_optimizer.optimize_models()
+                    logger.info("Self-triggered model optimization completed")
+                except Exception as model_e:
+                    logger.warning(f"Self-triggered model optimization failed: {model_e}")
+
+            # Trigger system health check and auto-recovery
+            self._perform_system_health_check()
+
+            # Trigger performance analysis and optimization
+            self._analyze_and_optimize_performance()
+
+            logger.info("Self-triggered evolution cycle completed successfully")
+
+        except Exception as e:
+            logger.error(f"Self-triggered evolution cycle failed: {e}")
+            # Attempt recovery
+            self._attempt_evolution_recovery()
+
+    def _perform_system_health_check(self):
+        """Perform proactive system health monitoring and automatic issue resolution"""
+        logger.info("Performing proactive system health check")
+
+        try:
+            # Check for common issues
+            issues_found = []
+
+            # Check if critical files exist
+            critical_files = ['neo_clone.py', 'brain_opencode.py', 'config.py']
+            for file in critical_files:
+                if not os.path.exists(file):
+                    issues_found.append(f"Missing critical file: {file}")
+
+            # Check if skills directory exists and has content
+            if not os.path.exists('skills') or not os.listdir('skills'):
+                issues_found.append("Skills directory missing or empty")
+
+            # Check for backup directory and create if missing
+            if not os.path.exists('backups'):
+                try:
+                    os.makedirs('backups', exist_ok=True)
+                    logger.info("Created missing backups directory")
+                except Exception as backup_e:
+                    issues_found.append(f"Could not create backups directory: {backup_e}")
+
+            # Auto-resolve issues where possible
+            for issue in issues_found:
+                logger.warning(f"Health check issue: {issue}")
+
+                # Try to auto-resolve
+                if "Missing critical file" in issue:
+                    # Create placeholder files for missing critical files
+                    filename = issue.split(": ")[1]
+                    try:
+                        with open(filename, 'w') as f:
+                            f.write(f"# Auto-generated placeholder for {filename}\n# This file was missing and created during health check\n")
+                        logger.info(f"Auto-created missing file: {filename}")
+                    except Exception as create_e:
+                        logger.error(f"Could not auto-create file {filename}: {create_e}")
+
+            if not issues_found:
+                logger.info("System health check passed - no issues found")
+
+        except Exception as e:
+            logger.error(f"System health check failed: {e}")
+
+    def _analyze_and_optimize_performance(self):
+        """Analyze system performance and apply automatic optimizations"""
+        logger.info("Analyzing system performance for automatic optimization")
+
+        try:
+            # Analyze recent performance metrics
+            if len(self.performance_history) >= 5:
+                recent_performance = self.performance_history[-5:]
+
+                # Calculate trends
+                scan_times = [p['scan_duration'] for p in recent_performance]
+                avg_scan_time = sum(scan_times) / len(scan_times)
+
+                opportunities_found = [p['opportunities_found'] for p in recent_performance]
+                avg_opportunities = sum(opportunities_found) / len(opportunities_found)
+
+                # Apply optimizations based on analysis
+                if avg_scan_time > 300:  # Scans taking more than 5 minutes
+                    logger.info("Detected slow scan performance, optimizing...")
+                    # Reduce internet scanning frequency
+                    self.internet_scan_interval = min(14400, self.internet_scan_interval * 1.5)  # Max 4 hours
+                    logger.info(f"Increased internet scan interval to {self.internet_scan_interval/3600:.1f} hours")
+
+                if avg_opportunities < 2:  # Finding few opportunities
+                    logger.info("Low opportunity discovery rate, adjusting scan parameters...")
+                    # Increase scan frequency slightly
+                    self.scan_interval = max(1800, self.scan_interval * 0.8)  # Min 30 minutes
+                    logger.info(f"Increased scan frequency to {self.scan_interval/3600:.1f} hours")
+
+                # Optimize memory usage if performance history indicates issues
+                if len(self.performance_history) > 20:
+                    # Clear old performance data to save memory
+                    self.performance_history = self.performance_history[-20:]
+                    logger.info("Optimized memory usage by clearing old performance history")
+
+            logger.info("Performance analysis and optimization completed")
+
+        except Exception as e:
+            logger.error(f"Performance analysis failed: {e}")
+
+    def _perform_automatic_backup(self):
+        """Perform automatic backup of critical system files"""
+        logger.info("Performing automatic system backup")
+
+        try:
+            # Define critical files to backup
+            critical_files = [
+                'neo_clone.py',
+                'brain_opencode.py',
+                'brain.py',
+                'config.py',
+                'autonomous_evolution_engine.py'
+            ]
+
+            # Also backup skills directory structure
+            if os.path.exists('skills'):
+                critical_files.extend([
+                    os.path.join('skills', f) for f in os.listdir('skills')
+                    if f.endswith('.py') and not f.startswith('__')
+                ][:5])  # Limit to 5 skill files
+
+            backed_up_files = 0
+            for filepath in critical_files:
+                if os.path.exists(filepath):
+                    try:
+                        backup_path = self.implementer.backup_manager.create_backup(filepath)
+                        if backup_path:
+                            backed_up_files += 1
+                    except Exception as backup_e:
+                        logger.warning(f"Failed to backup {filepath}: {backup_e}")
+
+            if backed_up_files > 0:
+                logger.info(f"Successfully backed up {backed_up_files} critical files")
+            else:
+                logger.warning("No files were successfully backed up")
+
+        except Exception as e:
+            logger.error(f"Automatic backup failed: {e}")
+
+    def _attempt_evolution_recovery(self):
+        """Attempt to recover from evolution failures"""
+        logger.info("Attempting evolution recovery")
+
+        try:
+            # Check if we have recent backups
+            backup_dir = "backups"
+            if os.path.exists(backup_dir):
+                backup_files = [f for f in os.listdir(backup_dir) if f.endswith('.backup')]
+                if backup_files:
+                    logger.info(f"Found {len(backup_files)} backup files for potential recovery")
+
+                    # For now, just log that recovery is possible
+                    # In a full implementation, we could selectively restore files
+                    logger.info("Recovery options available - manual intervention may be needed")
+                else:
+                    logger.warning("No backup files found for recovery")
+            else:
+                logger.warning("Backup directory not found")
+
+            # Reset evolution state if needed
+            if hasattr(self, 'skill_evolution_manager') and self.skill_evolution_manager:
+                try:
+                    # Reset evolution state
+                    self.skill_evolution_manager.evolution_active = False
+                    logger.info("Reset skill evolution state for recovery")
+                except Exception as reset_e:
+                    logger.warning(f"Could not reset evolution state: {reset_e}")
+
+        except Exception as e:
+            logger.error(f"Evolution recovery failed: {e}")
 
     def _continuous_implementation(self):
         """Continuously implement opportunities with enhanced error resilience"""
