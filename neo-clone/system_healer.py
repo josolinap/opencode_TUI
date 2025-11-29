@@ -1,11 +1,5 @@
-"""
-Autonomous System Healer for Neo-Clone
-
-This skill enables Neo-Clone to automatically detect, diagnose, and fix
-system issues including connection errors, JSON parsing failures, and
-other runtime problems without human intervention.
-"""
-
+from functools import lru_cache
+'\nAutonomous System Healer for Neo-Clone\n\nThis skill enables Neo-Clone to automatically detect, diagnose, and fix\nsystem issues including connection errors, JSON parsing failures, and\nother runtime problems without human intervention.\n'
 import os
 import sys
 import time
@@ -16,34 +10,32 @@ import threading
 from typing import Dict, List, Any, Optional, Tuple, Union
 from dataclasses import dataclass
 from enum import Enum
-
-# Import from current directory
 try:
     from skills import BaseSkill, SkillResult
 except ImportError:
-    # Fallback for when skills.py is not available
+
     class SkillResult:
-        def __init__(self, success: bool, output: str, data: Optional[Dict[str, Any]] = None):
+
+        def __init__(self, success: bool, output: str, data: Optional[Dict[str, Any]]=None):
             self.success = success
             self.output = output
             self.data = data
-    
+
     class BaseSkill:
-        def __init__(self, name: str, description: str, example: str = ""):
+
+        def __init__(self, name: str, description: str, example: str=''):
             self.name = name
             self.description = description
             self.example = example
-        
+
         def execute(self, params: Dict[str, Any]) -> SkillResult:
             raise NotImplementedError
-
 
 class IssueSeverity(Enum):
     LOW = 'low'
     MEDIUM = 'medium'
     HIGH = 'high'
     CRITICAL = 'critical'
-
 
 class IssueType(Enum):
     CONNECTION_ERROR = 'connection_error'
@@ -52,7 +44,6 @@ class IssueType(Enum):
     API_TIMEOUT = 'api_timeout'
     AUTHENTICATION_ERROR = 'authentication_error'
     SYSTEM_RESOURCE_ERROR = 'system_resource_error'
-
 
 @dataclass
 class SystemIssue:
@@ -72,16 +63,11 @@ class SystemIssue:
         if self.context is None:
             self.context = {}
 
-
 class SystemHealerSkill(BaseSkill):
     """Autonomous system healer skill for Neo-Clone"""
 
     def __init__(self):
-        super().__init__(
-            "system_healer",
-            "Autonomous system healer that detects, diagnoses, and fixes system issues",
-            "Heal system issues: 'Connection are closed on MCP server'"
-        )
+        super().__init__('system_healer', 'Autonomous system healer that detects, diagnoses, and fixes system issues', "Heal system issues: 'Connection are closed on MCP server'")
         self.logger = self._setup_logging()
         self.active_issues: List[SystemIssue] = []
         self.resolved_issues: List[SystemIssue] = []
@@ -105,113 +91,48 @@ class SystemHealerSkill(BaseSkill):
 
     def _load_healing_patterns(self) -> Dict[str, Dict]:
         """Load known healing patterns for different issue types"""
-        return {
-            'connection_error': {
-                'symptoms': ['Connection are closed', 'ECONNREFUSED', 'timeout', 'network'],
-                'fixes': ['restart_service', 'check_network_config', 'update_endpoints', 'reset_connection_pool'],
-                'files_to_check': ['packages/opencode/src/mcp/index.ts', 'packages/opencode/src/provider/provider.ts']
-            },
-            'json_parsing_error': {
-                'symptoms': ['Unexpected end of JSON input', 'JSON.parse', 'invalid json'],
-                'fixes': ['add_json_validation', 'implement_safe_parsing', 'add_error_handling', 'update_response_parsing'],
-                'files_to_check': ['packages/sdk/js/src/gen/core/serverSentEvents.gen.ts', 'packages/opencode/src/provider/provider.ts']
-            },
-            'mcp_server_error': {
-                'symptoms': ['MCP server', 'UnknownError', 'transport connection'],
-                'fixes': ['enhance_error_handling', 'add_retry_logic', 'implement_health_checks', 'update_error_messages'],
-                'files_to_check': ['packages/opencode/src/mcp/index.ts', 'packages/opencode/src/util/connection-health.ts']
-            },
-            'api_timeout': {
-                'symptoms': ['timeout', 'ETIMEDOUT', 'connection timeout'],
-                'fixes': ['increase_timeout', 'add_retry_logic', 'implement_circuit_breaker'],
-                'files_to_check': []
-            },
-            'authentication_error': {
-                'symptoms': ['authentication', 'unauthorized', '401', 'token'],
-                'fixes': ['refresh_token', 'check_credentials', 'update_auth_config'],
-                'files_to_check': []
-            }
-        }
+        return {'connection_error': {'symptoms': ['Connection are closed', 'ECONNREFUSED', 'timeout', 'network'], 'fixes': ['restart_service', 'check_network_config', 'update_endpoints', 'reset_connection_pool'], 'files_to_check': ['packages/opencode/src/mcp/index.ts', 'packages/opencode/src/provider/provider.ts']}, 'json_parsing_error': {'symptoms': ['Unexpected end of JSON input', 'JSON.parse', 'invalid json'], 'fixes': ['add_json_validation', 'implement_safe_parsing', 'add_error_handling', 'update_response_parsing'], 'files_to_check': ['packages/sdk/js/src/gen/core/serverSentEvents.gen.ts', 'packages/opencode/src/provider/provider.ts']}, 'mcp_server_error': {'symptoms': ['MCP server', 'UnknownError', 'transport connection'], 'fixes': ['enhance_error_handling', 'add_retry_logic', 'implement_health_checks', 'update_error_messages'], 'files_to_check': ['packages/opencode/src/mcp/index.ts', 'packages/opencode/src/util/connection-health.ts']}, 'api_timeout': {'symptoms': ['timeout', 'ETIMEDOUT', 'connection timeout'], 'fixes': ['increase_timeout', 'add_retry_logic', 'implement_circuit_breaker'], 'files_to_check': []}, 'authentication_error': {'symptoms': ['authentication', 'unauthorized', '401', 'token'], 'fixes': ['refresh_token', 'check_credentials', 'update_auth_config'], 'files_to_check': []}}
 
     def execute(self, params: Dict[str, Any]) -> SkillResult:
         """Execute the system healer skill"""
         action = params.get('action', 'detect')
-        
         try:
             if action == 'detect':
                 error_logs = params.get('error_logs', [])
                 issues = self.detect_issues(error_logs)
-                return SkillResult(
-                    success=True,
-                    output=f"Detected {len(issues)} issues",
-                    data={'issues': [self._serialize_issue(issue) for issue in issues]}
-                )
-            
+                return SkillResult(success=True, output=f'Detected {len(issues)} issues', data={'issues': [self._serialize_issue(issue) for issue in issues]})
             elif action == 'diagnose':
                 issue_data = params.get('issue')
                 if not issue_data:
-                    return SkillResult(success=False, output="No issue provided for diagnosis")
-                
+                    return SkillResult(success=False, output='No issue provided for diagnosis')
                 issue = self._deserialize_issue(issue_data)
                 diagnosis = self.diagnose_issue(issue)
-                return SkillResult(
-                    success=True,
-                    output="Issue diagnosed successfully",
-                    data=diagnosis
-                )
-            
+                return SkillResult(success=True, output='Issue diagnosed successfully', data=diagnosis)
             elif action == 'fix':
                 issue_data = params.get('issue')
                 fix_approach = params.get('fix_approach', 'auto')
-                
                 if not issue_data:
-                    return SkillResult(success=False, output="No issue provided for fixing")
-                
+                    return SkillResult(success=False, output='No issue provided for fixing')
                 issue = self._deserialize_issue(issue_data)
                 success = self.apply_fix(issue, fix_approach)
-                
-                return SkillResult(
-                    success=success,
-                    output=f"Fix application {'succeeded' if success else 'failed'}",
-                    data={'fix_applied': fix_approach, 'success': success}
-                )
-            
+                return SkillResult(success=success, output=f"Fix application {('succeeded' if success else 'failed')}", data={'fix_applied': fix_approach, 'success': success})
             elif action == 'start_monitoring':
                 self.start_monitoring()
-                return SkillResult(
-                    success=True,
-                    output="System monitoring started"
-                )
-            
+                return SkillResult(success=True, message='System monitoring started')
             elif action == 'stop_monitoring':
                 self.stop_monitoring()
-                return SkillResult(
-                    success=True,
-                    output="System monitoring stopped"
-                )
-            
+                return SkillResult(success=True, message='System monitoring stopped')
             elif action == 'status':
                 status = self.get_system_status()
-                return SkillResult(
-                    success=True,
-                    output="System status retrieved",
-                    data=status
-                )
-            
+                return SkillResult(success=True, message='System status retrieved', data=status)
             elif action == 'health_check':
                 issues = self._check_system_health()
-                return SkillResult(
-                    success=True,
-                    output=f"Health check completed. Found {len(issues)} issues",
-                    data={'issues': [self._serialize_issue(issue) for issue in issues]}
-                )
-            
+                return SkillResult(success=True, message=f'Health check completed. Found {len(issues)} issues', data={'issues': [self._serialize_issue(issue) for issue in issues]})
             else:
-                return SkillResult(success=False, output=f"Unknown action: {action}")
-                
+                return SkillResult(success=False, message=f'Unknown action: {action}')
         except Exception as e:
-            self.logger.error(f"System healer execution failed: {e}")
-            return SkillResult(success=False, output=f"Execution failed: {str(e)}")
+            self.logger.error(f'System healer execution failed: {e}')
+            return SkillResult(success=False, message=f'Execution failed: {str(e)}')
 
     def detect_issues(self, error_logs: List[str]) -> List[SystemIssue]:
         """Detect issues from error logs and system monitoring"""
@@ -225,131 +146,42 @@ class SystemHealerSkill(BaseSkill):
     def _analyze_log_entry(self, log_entry: str) -> Optional[SystemIssue]:
         """Analyze a single log entry to identify issues"""
         log_lower = log_entry.lower()
-        
-        # Check for connection errors
-        if any(symptom in log_lower for symptom in self.healing_patterns['connection_error']['symptoms']):
-            return SystemIssue(
-                type=IssueType.CONNECTION_ERROR,
-                severity=IssueSeverity.HIGH,
-                description='Connection error detected',
-                error_message=log_entry,
-                context={'auto_detected': True}
-            )
-        
-        # Check for JSON parsing errors
-        if any(symptom in log_lower for symptom in self.healing_patterns['json_parsing_error']['symptoms']):
-            return SystemIssue(
-                type=IssueType.JSON_PARSING_ERROR,
-                severity=IssueSeverity.MEDIUM,
-                description='JSON parsing error detected',
-                error_message=log_entry,
-                context={'auto_detected': True}
-            )
-        
-        # Check for MCP server errors
-        if any(symptom in log_lower for symptom in self.healing_patterns['mcp_server_error']['symptoms']):
-            return SystemIssue(
-                type=IssueType.MCP_SERVER_ERROR,
-                severity=IssueSeverity.HIGH,
-                description='MCP server error detected',
-                error_message=log_entry,
-                context={'auto_detected': True}
-            )
-        
-        # Check for API timeouts
-        if any(symptom in log_lower for symptom in self.healing_patterns['api_timeout']['symptoms']):
-            return SystemIssue(
-                type=IssueType.API_TIMEOUT,
-                severity=IssueSeverity.MEDIUM,
-                description='API timeout detected',
-                error_message=log_entry,
-                context={'auto_detected': True}
-            )
-        
-        # Check for authentication errors
-        if any(symptom in log_lower for symptom in self.healing_patterns['authentication_error']['symptoms']):
-            return SystemIssue(
-                type=IssueType.AUTHENTICATION_ERROR,
-                severity=IssueSeverity.HIGH,
-                description='Authentication error detected',
-                error_message=log_entry,
-                context={'auto_detected': True}
-            )
-        
+        if any((symptom in log_lower for symptom in self.healing_patterns['connection_error']['symptoms'])):
+            return SystemIssue(type=IssueType.CONNECTION_ERROR, severity=IssueSeverity.HIGH, description='Connection error detected', error_message=log_entry, context={'auto_detected': True})
+        if any((symptom in log_lower for symptom in self.healing_patterns['json_parsing_error']['symptoms'])):
+            return SystemIssue(type=IssueType.JSON_PARSING_ERROR, severity=IssueSeverity.MEDIUM, description='JSON parsing error detected', error_message=log_entry, context={'auto_detected': True})
+        if any((symptom in log_lower for symptom in self.healing_patterns['mcp_server_error']['symptoms'])):
+            return SystemIssue(type=IssueType.MCP_SERVER_ERROR, severity=IssueSeverity.HIGH, description='MCP server error detected', error_message=log_entry, context={'auto_detected': True})
+        if any((symptom in log_lower for symptom in self.healing_patterns['api_timeout']['symptoms'])):
+            return SystemIssue(type=IssueType.API_TIMEOUT, severity=IssueSeverity.MEDIUM, description='API timeout detected', error_message=log_entry, context={'auto_detected': True})
+        if any((symptom in log_lower for symptom in self.healing_patterns['authentication_error']['symptoms'])):
+            return SystemIssue(type=IssueType.AUTHENTICATION_ERROR, severity=IssueSeverity.HIGH, description='Authentication error detected', error_message=log_entry, context={'auto_detected': True})
         return None
 
     def diagnose_issue(self, issue: SystemIssue) -> Dict[str, Any]:
         """Use AI to diagnose the root cause of an issue"""
-        diagnosis_prompt = f"""
-        Analyze this system issue and provide a detailed diagnosis:
-        
-        Issue Type: {issue.type.value}
-        Severity: {issue.severity.value}
-        Description: {issue.description}
-        Error Message: {issue.error_message}
-        Context: {issue.context}
-        
-        Please provide:
-        1. Root cause analysis
-        2. Likely affected files/components
-        3. Recommended fix approach
-        4. Prevention strategies
-        
-        Be specific and actionable.
-        """
-        
-        # For now, use rule-based diagnosis instead of AI to avoid dependencies
+        diagnosis_prompt = f'\n        Analyze this system issue and provide a detailed diagnosis:\n        \n        Issue Type: {issue.type.value}\n        Severity: {issue.severity.value}\n        Description: {issue.description}\n        Error Message: {issue.error_message}\n        Context: {issue.context}\n        \n        Please provide:\n        1. Root cause analysis\n        2. Likely affected files/components\n        3. Recommended fix approach\n        4. Prevention strategies\n        \n        Be specific and actionable.\n        '
         diagnosis = self._rule_based_diagnosis(issue)
-        
-        return {
-            'diagnosis': diagnosis['analysis'],
-            'confidence': diagnosis['confidence'],
-            'recommended_fixes': diagnosis['fixes']
-        }
+        return {'diagnosis': diagnosis['analysis'], 'confidence': diagnosis['confidence'], 'recommended_fixes': diagnosis['fixes']}
 
     def _rule_based_diagnosis(self, issue: SystemIssue) -> Dict[str, Any]:
         """Rule-based diagnosis for common issues"""
         if issue.type == IssueType.CONNECTION_ERROR:
-            return {
-                'analysis': 'Connection error detected. Likely causes: service down, network issues, or incorrect endpoints.',
-                'confidence': 0.8,
-                'fixes': ['restart_service', 'check_network_config', 'update_endpoints']
-            }
+            return {'analysis': 'Connection error detected. Likely causes: service down, network issues, or incorrect endpoints.', 'confidence': 0.8, 'fixes': ['restart_service', 'check_network_config', 'update_endpoints']}
         elif issue.type == IssueType.JSON_PARSING_ERROR:
-            return {
-                'analysis': 'JSON parsing failed. Likely causes: malformed response, incomplete data, or encoding issues.',
-                'confidence': 0.9,
-                'fixes': ['add_json_validation', 'implement_safe_parsing', 'add_error_handling']
-            }
+            return {'analysis': 'JSON parsing failed. Likely causes: malformed response, incomplete data, or encoding issues.', 'confidence': 0.9, 'fixes': ['add_json_validation', 'implement_safe_parsing', 'add_error_handling']}
         elif issue.type == IssueType.MCP_SERVER_ERROR:
-            return {
-                'analysis': 'MCP server error detected. Likely causes: server configuration, connection issues, or protocol mismatch.',
-                'confidence': 0.7,
-                'fixes': ['enhance_error_handling', 'add_retry_logic', 'implement_health_checks']
-            }
+            return {'analysis': 'MCP server error detected. Likely causes: server configuration, connection issues, or protocol mismatch.', 'confidence': 0.7, 'fixes': ['enhance_error_handling', 'add_retry_logic', 'implement_health_checks']}
         elif issue.type == IssueType.API_TIMEOUT:
-            return {
-                'analysis': 'API timeout detected. Likely causes: slow response, network latency, or server overload.',
-                'confidence': 0.8,
-                'fixes': ['increase_timeout', 'add_retry_logic', 'implement_circuit_breaker']
-            }
+            return {'analysis': 'API timeout detected. Likely causes: slow response, network latency, or server overload.', 'confidence': 0.8, 'fixes': ['increase_timeout', 'add_retry_logic', 'implement_circuit_breaker']}
         elif issue.type == IssueType.AUTHENTICATION_ERROR:
-            return {
-                'analysis': 'Authentication error detected. Likely causes: expired token, invalid credentials, or permission issues.',
-                'confidence': 0.9,
-                'fixes': ['refresh_token', 'check_credentials', 'update_auth_config']
-            }
+            return {'analysis': 'Authentication error detected. Likely causes: expired token, invalid credentials, or permission issues.', 'confidence': 0.9, 'fixes': ['refresh_token', 'check_credentials', 'update_auth_config']}
         else:
-            return {
-                'analysis': 'Unknown issue type. Further investigation required.',
-                'confidence': 0.3,
-                'fixes': ['investigate_logs', 'check_system_status', 'contact_support']
-            }
+            return {'analysis': 'Unknown issue type. Further investigation required.', 'confidence': 0.3, 'fixes': ['investigate_logs', 'check_system_status', 'contact_support']}
 
     def apply_fix(self, issue: SystemIssue, fix_approach: str) -> bool:
         """Apply a fix to resolve the issue"""
         self.logger.info(f'Applying fix for {issue.type.value}: {fix_approach}')
-        
         try:
             if issue.type == IssueType.CONNECTION_ERROR:
                 return self._fix_connection_error(issue, fix_approach)
@@ -425,13 +257,11 @@ class SystemHealerSkill(BaseSkill):
     def _restart_affected_services(self) -> bool:
         """Restart services that might be affected"""
         try:
-            # On Windows, use taskkill to terminate processes
             if os.name == 'nt':
                 subprocess.run(['taskkill', '/F', '/IM', 'node.exe'], capture_output=True)
                 subprocess.run(['taskkill', '/F', '/IM', 'opencode.exe'], capture_output=True)
             else:
                 subprocess.run(['pkill', '-f', 'opencode'], capture_output=True)
-            
             time.sleep(2)
             self.logger.info('Services restarted successfully')
             return True
@@ -489,11 +319,8 @@ class SystemHealerSkill(BaseSkill):
         if self.monitoring_active:
             self.logger.warning('Monitoring already active')
             return
-        
         self.monitoring_active = True
         self.logger.info('Starting autonomous system monitoring')
-        
-        # Start monitoring in a separate thread
         self.monitoring_thread = threading.Thread(target=self._monitoring_loop, daemon=True)
         self.monitoring_thread.start()
 
@@ -502,7 +329,7 @@ class SystemHealerSkill(BaseSkill):
         while self.monitoring_active:
             try:
                 self._perform_health_check()
-                time.sleep(30)  # Check every 30 seconds
+                time.sleep(30)
             except Exception as e:
                 self.logger.error(f'Monitoring error: {e}')
                 time.sleep(10)
@@ -512,10 +339,8 @@ class SystemHealerSkill(BaseSkill):
         current_time = time.time()
         if current_time - self.last_health_check < 30:
             return
-        
         self.last_health_check = current_time
         issues = self._check_system_health()
-        
         for issue in issues:
             if not self._is_duplicate_issue(issue):
                 self.active_issues.append(issue)
@@ -524,45 +349,26 @@ class SystemHealerSkill(BaseSkill):
     def _check_system_health(self) -> List[SystemIssue]:
         """Check system health for common issues"""
         issues = []
-        
-        # Check critical files
-        critical_files = [
-            'packages/opencode/src/mcp/index.ts',
-            'packages/opencode/src/provider/provider.ts',
-            'neo-clone/skills.py',
-            'neo-clone/brain.py'
-        ]
-        
+        critical_files = ['packages/opencode/src/mcp/index.ts', 'packages/opencode/src/provider/provider.ts', 'neo-clone/skills.py', 'neo-clone/brain.py']
         for file_path in critical_files:
             if not os.path.exists(file_path):
-                issues.append(SystemIssue(
-                    type=IssueType.SYSTEM_RESOURCE_ERROR,
-                    severity=IssueSeverity.CRITICAL,
-                    description=f'Critical file missing: {file_path}',
-                    error_message=f'File not found: {file_path}',
-                    file_path=file_path
-                ))
-        
+                issues.append(SystemIssue(type=IssueType.SYSTEM_RESOURCE_ERROR, severity=IssueSeverity.CRITICAL, description=f'Critical file missing: {file_path}', error_message=f'File not found: {file_path}', file_path=file_path))
         return issues
 
     def _is_duplicate_issue(self, issue: SystemIssue) -> bool:
         """Check if this is a duplicate of an existing issue"""
         for existing in self.active_issues:
-            if (existing.type == issue.type and 
-                existing.error_message == issue.error_message and 
-                abs(existing.timestamp - issue.timestamp) < 60):
+            if existing.type == issue.type and existing.error_message == issue.error_message and (abs(existing.timestamp - issue.timestamp) < 60):
                 return True
         return False
 
     def _handle_new_issue(self, issue: SystemIssue) -> None:
         """Handle a newly detected issue"""
         self.logger.warning(f'New issue detected: {issue.type.value} - {issue.description}')
-        
         diagnosis = self.diagnose_issue(issue)
         if diagnosis['recommended_fixes']:
             best_fix = diagnosis['recommended_fixes'][0]
             success = self.apply_fix(issue, best_fix)
-            
             if success:
                 self.logger.info(f'Successfully applied fix: {best_fix}')
                 self.active_issues.remove(issue)
@@ -579,63 +385,24 @@ class SystemHealerSkill(BaseSkill):
 
     def get_system_status(self) -> Dict[str, Any]:
         """Get current system status"""
-        return {
-            'monitoring_active': self.monitoring_active,
-            'active_issues': len(self.active_issues),
-            'resolved_issues': len(self.resolved_issues),
-            'last_health_check': self.last_health_check,
-            'uptime': time.time() - self.start_time
-        }
+        return {'monitoring_active': self.monitoring_active, 'active_issues': len(self.active_issues), 'resolved_issues': len(self.resolved_issues), 'last_health_check': self.last_health_check, 'uptime': time.time() - self.start_time}
 
     def _serialize_issue(self, issue: SystemIssue) -> Dict[str, Any]:
         """Serialize issue for JSON transport"""
-        return {
-            'type': issue.type.value,
-            'severity': issue.severity.value,
-            'description': issue.description,
-            'error_message': issue.error_message,
-            'file_path': issue.file_path,
-            'line_number': issue.line_number,
-            'stack_trace': issue.stack_trace,
-            'timestamp': issue.timestamp,
-            'context': issue.context
-        }
+        return {'type': issue.type.value, 'severity': issue.severity.value, 'description': issue.description, 'error_message': issue.error_message, 'file_path': issue.file_path, 'line_number': issue.line_number, 'stack_trace': issue.stack_trace, 'timestamp': issue.timestamp, 'context': issue.context}
 
     def _deserialize_issue(self, data: Dict[str, Any]) -> SystemIssue:
         """Deserialize issue from JSON data"""
-        return SystemIssue(
-            type=IssueType(data['type']),
-            severity=IssueSeverity(data['severity']),
-            description=data['description'],
-            error_message=data['error_message'],
-            file_path=data.get('file_path'),
-            line_number=data.get('line_number'),
-            stack_trace=data.get('stack_trace'),
-            timestamp=data.get('timestamp') or time.time(),
-            context=data.get('context') or {}
-        )
-
+        return SystemIssue(type=IssueType(data['type']), severity=IssueSeverity(data['severity']), description=data['description'], error_message=data['error_message'], file_path=data.get('file_path'), line_number=data.get('line_number'), stack_trace=data.get('stack_trace'), timestamp=data.get('timestamp') or time.time(), context=data.get('context') or {})
 
 def demonstrate_system_healer():
     """Demonstrate the system healer capabilities"""
     healer = SystemHealerSkill()
-    
     print('NEO-CLONE AUTONOMOUS SYSTEM HEALER')
     print('=' * 50)
-    
-    # Test error detection
-    error_logs = [
-        'UnknownError: Connection are closed on MCP server',
-        'SyntaxError: Unexpected end of JSON input in response parsing',
-        'MCP server failed to connect: ECONNREFUSED',
-        'JSON.parse: Invalid JSON response from API',
-        'API timeout: ETIMEDOUT after 30 seconds',
-        'Authentication failed: 401 Unauthorized'
-    ]
-    
+    error_logs = ['UnknownError: Connection are closed on MCP server', 'SyntaxError: Unexpected end of JSON input in response parsing', 'MCP server failed to connect: ECONNREFUSED', 'JSON.parse: Invalid JSON response from API', 'API timeout: ETIMEDOUT after 30 seconds', 'Authentication failed: 401 Unauthorized']
     print('DETECTING ISSUES...')
     result = healer.execute({'action': 'detect', 'error_logs': error_logs})
-    
     if result.success:
         issues = result.data['issues']
         for issue_data in issues:
@@ -645,26 +412,20 @@ def demonstrate_system_healer():
             print(f'   Severity: {issue.severity.value}')
             print(f'   Description: {issue.description}')
             print(f'   Error: {issue.error_message}')
-            
             print(f'\nDIAGNOSING...')
             diagnosis = healer.diagnose_issue(issue)
             print(f"   Diagnosis: {diagnosis['diagnosis'][:200]}...")
-            
             if diagnosis['recommended_fixes']:
                 print(f'\nAPPLYING FIX...')
                 fix = diagnosis['recommended_fixes'][0]
                 success = healer.apply_fix(issue, fix)
                 print(f'   Fix: {fix}')
-                print(f"   Status: {'SUCCESS' if success else 'FAILED'}")
-    
+                print(f"   Status: {('SUCCESS' if success else 'FAILED')}")
     print(f'\nSYSTEM STATUS:')
     status = healer.get_system_status()
-    for key, value in status.items():
+    for (key, value) in status.items():
         print(f'   {key}: {value}')
-    
     print(f'\nSystem healer skill ready!')
     print(f'   Neo-Clone can now detect and fix system issues automatically')
-
-
 if __name__ == '__main__':
     demonstrate_system_healer()

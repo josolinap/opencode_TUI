@@ -7,10 +7,15 @@
   "scripts": {
     "dev": "start-web.bat",
     "web": "start-web.bat",
-    "tui": "packages/opencode/dist/opencode-windows-x64/bin/opencode.exe",
+    "tui": "bun run packages/opencode/src/index.ts",
+    "tui:built": "packages/opencode/dist/opencode-windows-x64/bin/opencode.exe",
     "server": "bun run packages/opencode/src/index.ts serve --port 4096",
     "typecheck": "bun turbo typecheck",
-    "prepare": "husky"
+    "prepare": "husky",
+    "config:build": "node scripts/build-config.mjs",
+    "config:verify": "node scripts/migration/migrate-opencode-config.mjs",
+    "config:test": "node scripts/migration/test-modular-config.mjs",
+    "config:models": "node scripts/migration/verify-models.mjs"
   },
   "workspaces": {
     "packages": [

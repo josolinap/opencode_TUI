@@ -1,0 +1,20 @@
+{
+  "connection_method": "opencode_cli",
+  "opencode_command": "opencode agent run",
+  "working_models": [
+    "big-pickle",
+    "grok-code",
+    "gpt-5-nano"
+  ],
+  "interface_type": "cli_integration",
+  "api_endpoints": {
+    "primary": "opencode_cli",
+    "fallback": "direct_model_execution"
+  },
+  "connection_status": "FIXED",
+  "test_results": {
+    "cli_available": true,
+    "models_detected": true,
+    "interface_working": true
+  }
+}

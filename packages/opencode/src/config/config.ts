@@ -454,7 +454,7 @@ export namespace Config {
           z.string(),
           ModelsDev.Provider.partial()
             .extend({
-              models: z.record(z.string(), ModelsDev.Model.partial()).optional(),
+              models: z.record(z.string(), z.union([z.string(), ModelsDev.Model.partial()])).optional(),
               options: z
                 .object({
                   apiKey: z.string().optional(),

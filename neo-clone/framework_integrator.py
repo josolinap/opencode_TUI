@@ -26,6 +26,10 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from brain.opencode_unified_brain import UnifiedBrain, ProcessingMode, ReasoningStrategy, AdvancedReasoningStrategy
+from brain.base_brain import BaseBrain
+
+# Alias for backward compatibility
+EnhancedBrain = UnifiedBrain
 from data_models import (
     Message, MessageRole, ConversationHistory, MemoryEntry, MemoryType,
     IntentType, SkillCategory, SkillResult, SkillContext, ReasoningStep,

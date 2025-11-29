@@ -244,6 +244,62 @@ class PerformanceMetrics:
 
 
 @dataclass
+class SkillParameter:
+    """Skill parameter definition"""
+    name: str = ""
+    param_type: str = "string"
+    required: bool = True
+    default: Any = None
+    description: str = ""
+    choices: List[str] = None
+    
+    def __post_init__(self):
+        if self.choices is None:
+            self.choices = []
+
+
+class SkillParameterType:
+    """Skill parameter types"""
+    STRING = "string"
+    INTEGER = "integer"
+    FLOAT = "float"
+    BOOLEAN = "boolean"
+    LIST = "list"
+    DICT = "dict"
+
+
+class SkillStatus:
+    """Skill execution status"""
+    IDLE = "idle"
+    RUNNING = "running"
+    SUCCESS = "success"
+    FAILED = "failed"
+    TIMEOUT = "timeout"
+
+
+@dataclass
+class SkillResult:
+    """Result from skill execution"""
+    success: bool = True
+    message: str = ""
+    data: Any = None
+    execution_time: float = 0.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    timestamp: datetime = field(default_factory=datetime.now)
+
+
+@dataclass
+class SkillContext:
+    """Context for skill execution"""
+    user_input: str = ""
+    session_id: str = ""
+    conversation_history: List[Message] = field(default_factory=list)
+    memory: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    timestamp: datetime = field(default_factory=datetime.now)
+
+
+@dataclass
 class VectorSearchResult:
     """Vector memory search result"""
     content: str = ""

@@ -1,0 +1,279 @@
+"""
+Command-line interface for Neo-OSINT
+"""
+
+import asyncio
+import click
+import json
+import sys
+from pathlib import Path
+from typing import Optional
+
+from .core.engine import NeoOSINTEngine
+from .core.config import NeoOSINTConfig
+
+
+@click.group()
+@click.version_option(version="1.0.0")
+def neo_osint():
+    """Neo-OSINT: Enhanced AI-Powered OSINT Tool for Neo-Clone"""
+    pass
+
+
+@neo_osint.command()
+@click.option(
+    "--query", "-q",
+    required=True,
+    help="OSINT investigation query"
+)
+@click.option(
+    "--config", "-c",
+    type=click.Path(exists=True),
+    help="Configuration file path"
+)
+@click.option(
+    "--max-results",
+    default=50,
+    type=int,
+    help="Maximum number of results to process"
+)
+@click.option(
+    "--include-clear-web",
+    is_flag=True,
+    help="Include clear web search engines"
+)
+@click.option(
+    "--save-evidence/--no-save-evidence",
+    default=True,
+    help="Save evidence files"
+)
+@click.option(
+    "--use-plugins/--no-use-plugins",
+    default=True,
+    help="Use plugins for enhanced analysis"
+)
+@click.option(
+    "--output", "-o",
+    type=click.Path(),
+    help="Output file for report"
+)
+@click.option(
+    "--format",
+    default="markdown",
+    type=click.Choice(["markdown", "json", "html"]),
+    help="Report format"
+)
+@click.option(
+    "--include-raw-data",
+    is_flag=True,
+    help="Include raw data in report"
+)
+def investigate(
+    query: str,
+    config: Optional[str],
+    max_results: int,
+    include_clear_web: bool,
+    save_evidence: bool,
+    use_plugins: bool,
+    output: Optional[str],
+    format: str,
+    include_raw_data: bool
+):
+    """Run an OSINT investigation"""
+    
+    async def run_investigation():
+        try:
+            # Load configuration
+            if config:
+                neo_config = NeoOSINTConfig.from_file(config)
+            else:
+                neo_config = NeoOSINTConfig()
+                # Initialize with defaults if no config file
+                neo_config.search_engines = neo_config.get_default_search_engines()
+                neo_config.ai_models = neo_config.get_default_ai_models()
+            
+            # Initialize engine
+            engine = NeoOSINTEngine(neo_config)
+            
+            # Run investigation
+            click.echo(f"🔍 Starting investigation for: {query}")
+            result = await engine.investigate(
+                query=query,
+                max_results=max_results,
+                include_clear_web=include_clear_web,
+                save_evidence=save_evidence,
+                use_plugins=use_plugins
+            )
+            
+            # Generate report
+            click.echo("📊 Generating report...")
+            report = await engine.generate_report(
+                result=result,
+                format=format,
+                include_raw_data=include_raw_data
+            )
+            
+            # Save or display report
+            if output:
+                with open(output, 'w', encoding='utf-8') as f:
+                    f.write(report)
+                click.echo(f"✅ Report saved to: {output}")
+            else:
+                click.echo("\n" + "="*60)
+                click.echo("INVESTIGATION REPORT")
+                click.echo("="*60)
+                click.echo(report)
+            
+            # Display summary
+            click.echo(f"\n📈 Investigation Summary:")
+            click.echo(f"   • Investigation ID: {result.investigation_id}")
+            click.echo(f"   • Execution time: {result.execution_time:.2f}s")
+            click.echo(f"   • Search results: {len(result.search_results)}")
+            click.echo(f"   • Filtered results: {len(result.filtered_results)}")
+            click.echo(f"   • Scraped content: {len(result.scraped_content)}")
+            click.echo(f"   • Evidence files: {len(result.evidence_files)}")
+            click.echo(f"   • Threat level: {result.analysis.get('threat_level', 'unknown')}")
+            
+            # Cleanup
+            await engine.cleanup()
+            
+        except Exception as e:
+            click.echo(f"❌ Investigation failed: {str(e)}", err=True)
+            sys.exit(1)
+    
+    # Run async investigation
+    asyncio.run(run_investigation())
+
+
+@neo_osint.command()
+@click.option(
+    "--output", "-o",
+    default="neo_osint_config.json",
+    help="Output configuration file"
+)
+def init_config(output: str):
+    """Initialize default configuration file"""
+    try:
+        config = NeoOSINTConfig()
+        config.search_engines = config.get_default_search_engines()
+        config.ai_models = config.get_default_ai_models()
+        
+        config.to_file(output)
+        click.echo(f"✅ Configuration saved to: {output}")
+        click.echo("📝 Edit the configuration file to customize your settings")
+        
+    except Exception as e:
+        click.echo(f"❌ Failed to create configuration: {str(e)}", err=True)
+        sys.exit(1)
+
+
+@neo_osint.command()
+@click.option(
+    "--config", "-c",
+    type=click.Path(exists=True),
+    help="Configuration file path"
+)
+def verify_config(config: Optional[str]):
+    """Verify configuration file"""
+    try:
+        if config:
+            neo_config = NeoOSINTConfig.from_file(config)
+        else:
+            neo_config = NeoOSINTConfig()
+        
+        click.echo("✅ Configuration is valid")
+        click.echo(f"📊 Configuration summary:")
+        click.echo(f"   • Search engines: {len(neo_config.search_engines)}")
+        click.echo(f"   • AI models: {len(neo_config.ai_models)}")
+        click.echo(f"   • Tor enabled: {neo_config.security.use_tor}")
+        click.echo(f"   • Evidence collection: {neo_config.evidence.metadata_collection}")
+        click.echo(f"   • Neo-Clone integration: {neo_config.use_neo_clone_skills}")
+        
+    except Exception as e:
+        click.echo(f"❌ Configuration validation failed: {str(e)}", err=True)
+        sys.exit(1)
+
+
+@neo_osint.command()
+@click.option(
+    "--investigation-id",
+    required=True,
+    help="Investigation ID to verify"
+)
+@click.option(
+    "--config", "-c",
+    type=click.Path(exists=True),
+    help="Configuration file path"
+)
+def verify_evidence(investigation_id: str, config: Optional[str]):
+    """Verify evidence integrity for an investigation"""
+    
+    async def run_verification():
+        try:
+            # Load configuration
+            if config:
+                neo_config = NeoOSINTConfig.from_file(config)
+            else:
+                neo_config = NeoOSINTConfig()
+            
+            # Initialize evidence collector
+            from .evidence.collector import EvidenceCollector
+            collector = EvidenceCollector(neo_config)
+            
+            # Verify evidence
+            result = await collector.verify_evidence_integrity(investigation_id)
+            
+            if result["valid"]:
+                click.echo(f"✅ Evidence integrity verified for investigation {investigation_id}")
+                click.echo(f"📊 Verified files: {result['verified_files']}")
+            else:
+                click.echo(f"❌ Evidence integrity check failed for investigation {investigation_id}")
+                if "error" in result:
+                    click.echo(f"   Error: {result['error']}")
+                if result.get("failed_files"):
+                    click.echo(f"   Failed files: {len(result['failed_files'])}")
+                if result.get("missing_files"):
+                    click.echo(f"   Missing files: {len(result['missing_files'])}")
+            
+            await collector.cleanup()
+            
+        except Exception as e:
+            click.echo(f"❌ Evidence verification failed: {str(e)}", err=True)
+            sys.exit(1)
+    
+    asyncio.run(run_verification())
+
+
+@neo_osint.command()
+def list_plugins():
+    """List available plugins"""
+    
+    async def run_plugin_list():
+        try:
+            config = NeoOSINTConfig()
+            from .plugins.manager import PluginManager
+            
+            manager = PluginManager(config)
+            await manager.load_plugins()
+            
+            plugins = manager.get_plugin_info()
+            
+            if plugins:
+                click.echo("🔌 Available plugins:")
+                for plugin in plugins:
+                    click.echo(f"   • {plugin['name']} v{plugin['version']}")
+                    click.echo(f"     {plugin['description']}")
+            else:
+                click.echo("ℹ️  No plugins loaded")
+            
+            await manager.cleanup()
+            
+        except Exception as e:
+            click.echo(f"❌ Failed to list plugins: {str(e)}", err=True)
+            sys.exit(1)
+    
+    asyncio.run(run_plugin_list())
+
+
+if __name__ == "__main__":
+    neo_osint()

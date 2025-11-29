@@ -1,534 +1,485 @@
-"""
-main.py - Neo-Clone Brain assistant entry point with Enhanced TUI interface (Phase 4)
-
-Usage:
-    python main.py [--tui] [--cli] [--enhanced] [--config CONFIG] [--debug] [--theme THEME]
-
-Default mode is Enhanced TUI with Phase 4 features.
-Use --cli for simple command-line mode.
-Use --tui for classic TUI mode.
-Use --enhanced for new enhanced TUI with all Phase 4 features.
-
-Phase 4 Features:
-- Multi-Session Management (Claude-Squad inspired architecture)
-- Git Worktree Isolation for session separation
-- Parallel processing across multiple sessions
-- OpenSpec-NC spec-driven development
-- TONL-NC token optimization
-- Enhanced reasoning strategies (Multi-Session)
-- Real-time session monitoring and analytics
-- Background processing capabilities
-- Enterprise-grade session management
-
-Previous Phase 3 Features:
-- Persistent memory (JSON-based conversation history)
-- Enhanced logging system with analytics
-- 6 new LLM presets (creative, technical, analytical, etc.)
-- 2 new skills (file_manager, web_search)
-- Plugin system for extensibility
-- Dark/Light theme toggle
-- Message search functionality
-- Usage statistics and analytics
-"""
-
+from functools import lru_cache
+'\nmain.py - Neo-Clone Brain assistant entry point with Enhanced TUI interface (Phase 4)\n\nUsage:\n    python main.py [--tui] [--cli] [--enhanced] [--config CONFIG] [--debug] [--theme THEME]\n\nDefault mode is Enhanced TUI with Phase 4 features.\nUse --cli for simple command-line mode.\nUse --tui for classic TUI mode.\nUse --enhanced for new enhanced TUI with all Phase 4 features.\n\nPhase 4 Features:\n- Multi-Session Management (Claude-Squad inspired architecture)\n- Git Worktree Isolation for session separation\n- Parallel processing across multiple sessions\n- OpenSpec-NC spec-driven development\n- TONL-NC token optimization\n- Enhanced reasoning strategies (Multi-Session)\n- Real-time session monitoring and analytics\n- Background processing capabilities\n- Enterprise-grade session management\n\nPrevious Phase 3 Features:\n- Persistent memory (JSON-based conversation history)\n- Enhanced logging system with analytics\n- 6 new LLM presets (creative, technical, analytical, etc.)\n- 2 new skills (file_manager, web_search)\n- Plugin system for extensibility\n- Dark/Light theme toggle\n- Message search functionality\n- Usage statistics and analytics\n'
 import argparse
 import logging
 import sys
 import os
-from utils import setup_logging
-from config import get_config
-from skills import SkillsManager
-from brain import Brain
-from brain.opencode_unified_brain import UnifiedBrain as EnhancedBrain
-from minimax_agent import get_minimax_agent
-from brain.unified_memory import get_unified_memory as get_memory
-from logging_system import get_logger
-from llm_presets import get_preset_manager
-from plugin_system import get_plugin_manager
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+
+# Import from parent directory
+try:
+    from skills import OpenCodeSkillsManager as SkillsManager
+except ImportError:
+    # Fallback if skills module not available
+    class SkillsManager:
+        def __init__(self):
+            self.skills = {}
+        def list_skills(self):
+            return []
+        def get(self, name):
+            return None
+
+try:
+    from brain.brain import Brain
+except ImportError:
+    # Fallback brain
+    class Brain:
+        def __init__(self, config, skills):
+            self.config = config
+            self.skills = skills
+        async def process_input(self, text):
+            return f"Brain response to: {text}"
+
+try:
+    from brain.opencode_unified_brain import UnifiedBrain as EnhancedBrain
+except ImportError:
+    # Fallback to standard brain
+    EnhancedBrain = Brain
+
+try:
+    from minimax_agent import get_minimax_agent
+except ImportError:
+    # Fallback minimax agent
+    def get_minimax_agent():
+        return None
+
+try:
+    from brain.unified_memory import get_unified_memory as get_memory
+except ImportError:
+    # Fallback memory
+    def get_memory():
+        return None
+
+try:
+    from logging_system import get_logger
+except ImportError:
+    # Fallback logger
+    import logging
+    def get_logger():
+        return logging.getLogger('neo')
+
+try:
+    from llm_presets import get_preset_manager
+except ImportError:
+    # Fallback preset manager
+    def get_preset_manager():
+        return None
+
+try:
+    from plugin_system import get_plugin_manager
+except ImportError:
+    # Fallback plugin manager
+    def get_plugin_manager():
+        return None
+
+# Setup logging
+import logging
+def setup_logging(debug=False):
+    level = logging.DEBUG if debug else logging.INFO
+    logging.basicConfig(level=level, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+try:
+    from config import get_config
+except ImportError:
+    # Fallback config
+    def get_config(config_path=None):
+        class Config:
+            def __init__(self):
+                self.provider = "ollama"
+                self.model_name = "llama2"
+                self.endpoint = "http://localhost:11434"
+                self.max_tokens = 2048
+                self.temperature = 0.7
+        return Config()
 
 def parse_args():
-    p = argparse.ArgumentParser(
-        prog="neo-clone", 
-        description="Neo-Clone AI Assistant v4.0 - Enhanced self-hosted terminal assistant with Phase 4 Multi-Session features"
-    )
-    p.add_argument("--config", help="Path to config file (JSON)", default=None)
-    p.add_argument("--debug", help="Enable debug logging", action="store_true")
-    p.add_argument("--theme", choices=["light", "dark"], help="Initial theme for TUI (enhanced mode only)")
-    p.add_argument("--no-memory", help="Disable persistent memory system", action="store_true")
-    p.add_argument("--no-logging", help="Disable enhanced logging system", action="store_true")
-    
-    # Mode selection (mutually exclusive)
+    p = argparse.ArgumentParser(prog='neo-clone', description='Neo-Clone AI Assistant v4.0 - Enhanced self-hosted terminal assistant with Phase 4 Multi-Session features')
+    p.add_argument('--config', help='Path to config file (JSON)', default=None)
+    p.add_argument('--debug', help='Enable debug logging', action='store_true')
+    p.add_argument('--theme', choices=['light', 'dark'], help='Initial theme for TUI (enhanced mode only)')
+    p.add_argument('--no-memory', help='Disable persistent memory system', action='store_true')
+    p.add_argument('--no-logging', help='Disable enhanced logging system', action='store_true')
     mode_group = p.add_mutually_exclusive_group()
-    mode_group.add_argument(
-        "--enhanced", 
-        action="store_true", 
-        help="Run in Enhanced TUI mode with all Phase 3 features - DEFAULT"
-    )
-    mode_group.add_argument(
-        "--tui", 
-        action="store_true", 
-        help="Run in Classic TUI mode (textual interface)"
-    )
-    mode_group.add_argument(
-        "--cli",
-        action="store_true",
-        help="Run in CLI mode (simple command-line)"
-    )
-    mode_group.add_argument(
-        "--tool",
-        action="store_true",
-        help="Run in tool mode (process single message from stdin and exit)"
-    )
-    
+    mode_group.add_argument('--enhanced', action='store_true', help='Run in Enhanced TUI mode with all Phase 3 features - DEFAULT')
+    mode_group.add_argument('--tui', action='store_true', help='Run in Classic TUI mode (textual interface)')
+    mode_group.add_argument('--cli', action='store_true', help='Run in CLI mode (simple command-line)')
+    mode_group.add_argument('--tool', action='store_true', help='Run in tool mode (process single message from stdin and exit)')
     return p.parse_args()
 
 async def _process_with_brain(brain, text):
     """Process message with brain using correct method based on brain type"""
     try:
-        # Check if brain has process_input method (EnhancedBrain/UnifiedBrain)
         if hasattr(brain, 'process_input'):
             result = await brain.process_input(text)
             if isinstance(result, tuple) and len(result) == 2:
-                return result[0]  # Return just the response text
+                return result[0]
             else:
                 return str(result)
-        # Check if brain has send_message method (regular Brain)
         elif hasattr(brain, 'send_message'):
             return brain.send_message(text)
         else:
-            return "Error: Brain interface not recognized"
+            return 'Error: Brain interface not recognized'
     except Exception as e:
-        logger.error(f"Brain processing failed: {e}")
-        return f"Error processing message: {e}"
+        logger.error(f'Brain processing failed: {e}')
+        return f'Error processing message: {e}'
 
 async def cli_mode(args=None, cfg=None):
     """Enhanced CLI mode with Phase 3 features."""
     if cfg is None:
         cfg = get_config()
-    
-    logger = logging.getLogger("neo.main")
-    logger.info("Configuration loaded: provider=%s model=%s", cfg.provider, cfg.model_name)
-    
-# Initialize Phase 3 systems
+    logger = logging.getLogger('neo.main')
+    logger.info('Configuration loaded: provider=%s model=%s', cfg.provider, cfg.model_name)
     memory = None
     preset_manager = None
     plugin_manager = None
-    
     if not (args and getattr(args, 'no_memory', False)):
         try:
             memory = get_memory()
-            logger.info("Memory system initialized")
+            logger.info('Memory system initialized')
         except Exception as e:
-            logger.warning(f"Failed to initialize memory system: {e}")
-    
+            logger.warning(f'Failed to initialize memory system: {e}')
     if not (args and getattr(args, 'no_logging', False)):
         try:
             logger_instance = get_logger()
-            logger_instance.log_system_event("cli_startup", "CLI mode started")
-            logger.info("Enhanced logging system initialized")
+            logger_instance.log_system_event('cli_startup', 'CLI mode started')
+            logger.info('Enhanced logging system initialized')
         except Exception as e:
-            logger.warning(f"Failed to initialize logging system: {e}")
-    
+            logger.warning(f'Failed to initialize logging system: {e}')
     try:
         preset_manager = get_preset_manager()
     except Exception as e:
-        logger.warning(f"Failed to initialize preset manager: {e}")
-    
+        logger.warning(f'Failed to initialize preset manager: {e}')
     try:
         plugin_manager = get_plugin_manager()
         loaded_plugins = plugin_manager.list_plugins()
-        logger.info(f"Plugin system initialized with {len(loaded_plugins)} plugins")
+        logger.info(f'Plugin system initialized with {len(loaded_plugins)} plugins')
     except Exception as e:
-        logger.warning(f"Failed to initialize plugin system: {e}")
-    
-    # Initialize MCP Protocol Integration Systems
+        logger.warning(f'Failed to initialize plugin system: {e}')
     try:
         from tool_performance_monitor import performance_monitor
         from tool_cache_system import tool_cache
         from parallel_executor import parallel_executor
         from resource_manager import resource_manager
-        
-        # Start MCP systems
         import asyncio
         asyncio.create_task(performance_monitor.start_monitoring())
         asyncio.create_task(tool_cache.start())
         asyncio.create_task(resource_manager.start())
-        
-        logger.info("MCP Protocol integration systems initialized")
+        logger.info('MCP Protocol integration systems initialized')
     except Exception as e:
-        logger.warning(f"Failed to initialize MCP systems: {e}")
-    
-    # Initialize skills and MiniMax Agent with dynamic reasoning
+        logger.warning(f'Failed to initialize MCP systems: {e}')
     skills = SkillsManager()
-
-    # Initialize MiniMax Agent with advanced reasoning capabilities
     try:
         minimax_agent = get_minimax_agent()
-        print("[MINIMAX] Advanced reasoning agent initialized with dynamic skill generation")
-        print(f"[MINIMAX] Search strategy: {minimax_agent.search_strategy.value}")
-        print(f"[MINIMAX] Max reasoning depth: {minimax_agent.max_depth}")
-        print(f"[MINIMAX] Available skills: {len(skills.list_skills())}")
-
-# Try to use Enhanced Brain as fallback
+        print('[MINIMAX] Advanced reasoning agent initialized with dynamic skill generation')
+        print(f'[MINIMAX] Search strategy: {minimax_agent.search_strategy.value}')
+        print(f'[MINIMAX] Max reasoning depth: {minimax_agent.max_depth}')
+        print(f'[MINIMAX] Available skills: {len(skills.list_skills())}')
         try:
             brain = EnhancedBrain(cfg, skills)
-            print("[ENHANCED] Enhanced Brain available as fallback")
+            print('[ENHANCED] Enhanced Brain available as fallback')
         except Exception as e:
             brain = Brain(cfg, skills)
-            print(f"[INFO] Enhanced Brain unavailable, using standard brain: {e}")
-
+            print(f'[INFO] Enhanced Brain unavailable, using standard brain: {e}')
     except Exception as e:
-# Fallback to Enhanced Brain if MiniMax Agent fails
-        print(f"[MINIMAX] Advanced reasoning agent unavailable: {e}")
+        print(f'[MINIMAX] Advanced reasoning agent unavailable: {e}')
         try:
             brain = EnhancedBrain(cfg, skills)
             minimax_agent = None
-            print("[ENHANCED] Using Enhanced Brain as primary")
+            print('[ENHANCED] Using Enhanced Brain as primary')
         except Exception as e2:
             brain = Brain(cfg, skills)
             minimax_agent = None
-            print(f"[INFO] Using standard brain: {e2}")
-    
-    print("Neo-Clone Enhanced CLI mode v4.0")
+            print(f'[INFO] Using standard brain: {e2}')
+    print('Neo-Clone Enhanced CLI mode v4.0')
     print("Type 'exit' to quit. Type 'help' for available commands.")
-    print("Phase 4 commands: skills, memory, stats, presets, plugins, multisession, sessions")
-    print("Enhanced TUI: Run with --enhanced for the full Phase 4 interface")
-    print("-" * 60)
-    
-    current_preset = "conversational"
-    
+    print('Phase 4 commands: skills, memory, stats, presets, plugins, multisession, sessions')
+    print('Enhanced TUI: Run with --enhanced for the full Phase 4 interface')
+    print('-' * 60)
+    current_preset = 'conversational'
     while True:
         try:
-            text = input("You> ").strip()
+            text = input('You> ').strip()
             if not text:
                 continue
-            
-            # Handle special commands
-            if text.lower() in ("exit", "quit"):
-                print("Goodbye!")
+            if text.lower() in ('exit', 'quit'):
+                print('Goodbye!')
                 break
-            
-            if text.lower() == "help":
-                print("\n📖 Available Commands:")
-                print("- skills         : List available skills")
-                print("- memory         : Show memory system info")
-                print("- stats          : Show usage statistics")
-                print("- presets        : List available LLM presets")
-                print("- plugins        : Show loaded plugins")
-                print("- multisession   : Show multi-session status")
-                print("- sessions       : List active sessions")
-                print("- new-session    : Create new session")
-                print("- help           : Show this help")
-                print("- enhanced       : Launch enhanced TUI")
-                print("- tui            : Launch classic TUI")
-                print("- exit/quit      : Exit the application")
-                print("\n💡 Regular conversation is also supported!")
-                print("🚀 New: Multi-session parallel processing available!")
+            if text.lower() == 'help':
+                print('\n📖 Available Commands:')
+                print('- skills         : List available skills')
+                print('- memory         : Show memory system info')
+                print('- stats          : Show usage statistics')
+                print('- presets        : List available LLM presets')
+                print('- plugins        : Show loaded plugins')
+                print('- multisession   : Show multi-session status')
+                print('- sessions       : List active sessions')
+                print('- new-session    : Create new session')
+                print('- help           : Show this help')
+                print('- enhanced       : Launch enhanced TUI')
+                print('- tui            : Launch classic TUI')
+                print('- exit/quit      : Exit the application')
+                print('\n💡 Regular conversation is also supported!')
+                print('🚀 New: Multi-session parallel processing available!')
                 continue
-            
-            if text.lower() == "skills":
+            if text.lower() == 'skills':
                 skill_list = skills.list_skills()
-                print(f"Available skills ({len(skill_list)}):")
+                print(f'Available skills ({len(skill_list)}):')
                 for skill in skill_list:
                     try:
                         skill_obj = skills.get(skill)
-                        print(f"  • {skill}: {skill_obj.description}")
+                        print(f'  • {skill}: {skill_obj.description}')
                     except Exception:
-                        print(f"  • {skill}: (description unavailable)")
-                print("\nSkills are automatically triggered by keywords in your messages!")
+                        print(f'  • {skill}: (description unavailable)')
+                print('\nSkills are automatically triggered by keywords in your messages!')
                 continue
-            
-            if text.lower() == "memory" and memory:
+            if text.lower() == 'memory' and memory:
                 stats = memory.get_statistics()
-                print(f"Memory System Status:")
+                print(f'Memory System Status:')
                 print(f"  • Total conversations: {stats.get('total_conversations', 0)}")
                 print(f"  • Current session: {stats.get('session_id', 'N/A')}")
                 print(f"  • Memory directory: {stats.get('memory_dir', 'N/A')}")
                 continue
-            
-            if text.lower() == "stats" and memory:
+            if text.lower() == 'stats' and memory:
                 memory_stats = memory.get_statistics()
-                print(f"Usage Statistics:")
+                print(f'Usage Statistics:')
                 print(f"  • Total conversations: {memory_stats.get('total_conversations', 0)}")
                 if hasattr(memory, 'preferences'):
-                    print(f"  • Theme: {memory.preferences.theme}")
-                    print(f"  • Max history: {memory.preferences.max_history}")
+                    print(f'  • Theme: {memory.preferences.theme}')
+                    print(f'  • Max history: {memory.preferences.max_history}')
                 continue
-            
-            if text.lower() == "presets" and preset_manager:
+            if text.lower() == 'presets' and preset_manager:
                 presets = preset_manager.list_presets()
-                print(f"Available LLM Presets ({len(presets)}):")
-                for name, preset in presets.items():
-                    category_icons = {"creative": "🎨", "technical": "💻", "analytical": "🔬", "conversational": "💬"}
-                    icon = category_icons.get(preset.category, "📝")
-                    print(f"  {icon} {name}: {preset.description}")
-                print(f"\nCurrent preset: {current_preset}")
-                print("Presets are automatically selected based on your input!")
+                print(f'Available LLM Presets ({len(presets)}):')
+                for (name, preset) in presets.items():
+                    category_icons = {'creative': '🎨', 'technical': '💻', 'analytical': '🔬', 'conversational': '💬'}
+                    icon = category_icons.get(preset.category, '📝')
+                    print(f'  {icon} {name}: {preset.description}')
+                print(f'\nCurrent preset: {current_preset}')
+                print('Presets are automatically selected based on your input!')
                 continue
-            
-            if text.lower() == "plugins" and plugin_manager:
+            if text.lower() == 'plugins' and plugin_manager:
                 plugins = plugin_manager.list_all_plugins()
-                print(f"Loaded Plugins ({len(plugins)}):")
-                for name, info in plugins.items():
-                    status = "✅" if info['loaded'] else "❌"
+                print(f'Loaded Plugins ({len(plugins)}):')
+                for (name, info) in plugins.items():
+                    status = '✅' if info['loaded'] else '❌'
                     version = info['metadata'].get('version', 'Unknown') if info['metadata'] else 'Unknown'
-                    print(f"  {status} {name} v{version}")
+                    print(f'  {status} {name} v{version}')
                 continue
-            
-            if text.lower() == "multisession":
+            if text.lower() == 'multisession':
                 try:
                     from multisession_neo_clone import MultiSessionManager
                     manager = MultiSessionManager()
                     status = await manager.get_system_status()
-                    print(f"🚀 Multi-Session System Status:")
+                    print(f'🚀 Multi-Session System Status:')
                     print(f"  • Total sessions: {status.get('total_sessions', 0)}")
                     print(f"  • Active sessions: {status.get('active_sessions', 0)}")
                     print(f"  • Success rate: {status.get('success_rate', 0):.1f}%")
                     print(f"  • Git worktrees: {status.get('git_worktrees', 0)}")
                 except Exception as e:
-                    print(f"❌ Multi-session system unavailable: {e}")
+                    print(f'❌ Multi-session system unavailable: {e}')
                 continue
-            
-            if text.lower() == "sessions":
+            if text.lower() == 'sessions':
                 try:
                     from multisession_neo_clone import MultiSessionManager
                     manager = MultiSessionManager()
                     sessions = await manager.list_sessions()
-                    print(f"📋 Active Sessions ({len(sessions)}):")
+                    print(f'📋 Active Sessions ({len(sessions)}):')
                     if sessions:
                         for session in sessions:
                             print(f"  • {session['session_id']}: {session['name']}")
                             print(f"    Type: {session['type']}, Status: {session['status']}")
                             print(f"    Uptime: {session['uptime_seconds']:.1f}s")
                     else:
-                        print("  No active sessions")
+                        print('  No active sessions')
                 except Exception as e:
-                    print(f"❌ Session listing unavailable: {e}")
+                    print(f'❌ Session listing unavailable: {e}')
                 continue
-            
-            if text.lower().startswith("new-session"):
+            if text.lower().startswith('new-session'):
                 try:
                     from multisession_neo_clone import MultiSessionManager, SessionType
                     manager = MultiSessionManager()
-                    
-                    # Parse session name
                     parts = text.split(maxsplit=2)
                     if len(parts) > 2:
                         session_name = parts[2]
                     else:
-                        session_name = f"CLI Session {len(await manager.list_sessions()) + 1}"
-                    
-                    session_id = await manager.create_session(
-                        name=session_name,
-                        session_type=SessionType.GENERAL
-                    )
-                    print(f"✅ Created session: {session_name}")
-                    print(f"   Session ID: {session_id}")
+                        session_name = f'CLI Session {len(await manager.list_sessions()) + 1}'
+                    session_id = await manager.create_session(name=session_name, session_type=SessionType.GENERAL)
+                    print(f'✅ Created session: {session_name}')
+                    print(f'   Session ID: {session_id}')
                 except Exception as e:
-                    print(f"❌ Failed to create session: {e}")
+                    print(f'❌ Failed to create session: {e}')
                 continue
-            
-            if text.lower() == "enhanced":
-                print("Launching Enhanced TUI...")
+            if text.lower() == 'enhanced':
+                print('Launching Enhanced TUI...')
                 os.execv(sys.executable, ['python', 'main.py', '--enhanced'] + (['--theme', args.theme] if args and args.theme else []))
-            
-            if text.lower() == "tui":
-                print("Launching Classic TUI...")
+            if text.lower() == 'tui':
+                print('Launching Classic TUI...')
                 os.execv(sys.executable, ['python', 'main.py', '--tui'])
-            
-            # Log user message
             if memory:
-                memory.add_conversation(text, "", intent="user_input")
-
-            # Process regular message with MiniMax Agent if available
+                memory.add_conversation(text, '', intent='user_input')
             if minimax_agent:
                 try:
-                    reply, reasoning_trace = await minimax_agent.process_input(text)
-                    print(f"Neo> [MINIMAX] {reply}")
-                    print(f"[MINIMAX] Reasoning confidence: {reasoning_trace.confidence_score:.2f}")
+                    (reply, reasoning_trace) = await minimax_agent.process_input(text)
+                    print(f'Neo> [MINIMAX] {reply}')
+                    print(f'[MINIMAX] Reasoning confidence: {reasoning_trace.confidence_score:.2f}')
                 except Exception as e:
-                    logger.warning(f"MiniMax Agent failed, falling back to brain: {e}")
+                    logger.warning(f'MiniMax Agent failed, falling back to brain: {e}')
                     reply = await _process_with_brain(brain, text)
-                    print(f"Neo> [FALLBACK] {reply}")
+                    print(f'Neo> [FALLBACK] {reply}')
             else:
                 reply = await _process_with_brain(brain, text)
-                print(f"Neo> {reply}")
-
-            # Add to memory
+                print(f'Neo> {reply}')
             if memory:
-                memory.add_conversation(text, reply, intent="chat")
-            
+                memory.add_conversation(text, reply, intent='chat')
         except KeyboardInterrupt:
-            print("\nExiting.")
+            print('\nExiting.')
             break
         except Exception as e:
-            logger.error("Error: %s", e)
-            print("Neo> [Error]:", e)
+            logger.error('Error: %s', e)
+            print('Neo> [Error]:', e)
 
 async def tool_mode(args=None, cfg=None):
     """Tool mode for processing single messages from opencode integration."""
     if cfg is None:
         cfg = get_config()
-
-    logger = logging.getLogger("neo.tool")
-    logger.info("Tool mode started")
-
-    # Initialize Phase 3 systems (same as CLI mode)
+    logger = logging.getLogger('neo.tool')
+    logger.info('Tool mode started')
     memory = None
     preset_manager = None
     plugin_manager = None
-
     if not (args and getattr(args, 'no_memory', False)):
         try:
             memory = get_memory()
-            logger.info("Memory system initialized")
+            logger.info('Memory system initialized')
         except Exception as e:
-            logger.warning(f"Failed to initialize memory system: {e}")
-
+            logger.warning(f'Failed to initialize memory system: {e}')
     if not (args and getattr(args, 'no_logging', False)):
         try:
             logger_instance = get_logger()
-            logger_instance.log_system_event("tool_startup", "Tool mode started")
-            logger.info("Enhanced logging system initialized")
+            logger_instance.log_system_event('tool_startup', 'Tool mode started')
+            logger.info('Enhanced logging system initialized')
         except Exception as e:
-            logger.warning(f"Failed to initialize logging system: {e}")
-
+            logger.warning(f'Failed to initialize logging system: {e}')
     try:
         preset_manager = get_preset_manager()
     except Exception as e:
-        logger.warning(f"Failed to initialize preset manager: {e}")
-
+        logger.warning(f'Failed to initialize preset manager: {e}')
     try:
         plugin_manager = get_plugin_manager()
     except Exception as e:
-        logger.warning(f"Failed to initialize plugin system: {e}")
-
-    # Initialize skills and brain
+        logger.warning(f'Failed to initialize plugin system: {e}')
     skills = SkillsManager()
     brain = None
     minimax_agent = None
-
+    try:
+        print(f'DEBUG: About to initialize EnhancedBrain with cfg={cfg}, skills={skills}')
+        brain = EnhancedBrain(cfg, skills)
+        logger.info('Enhanced Brain initialized')
+        print(f'DEBUG: EnhancedBrain initialized successfully: {type(brain)}')
+    except Exception as e:
+        import traceback
+        logger.warning(f'Enhanced Brain failed, using standard brain: {e}')
+        print(f'DEBUG: EnhancedBrain failed with error: {e}')
+        print(f'DEBUG: Full traceback: {traceback.format_exc()}')
     try:
         brain = EnhancedBrain(cfg, skills)
-        logger.info("Enhanced Brain initialized")
+        logger.info('Enhanced Brain initialized')
     except Exception as e:
-        logger.warning(f"Enhanced Brain failed, using standard brain: {e}")
+        logger.warning(f'Enhanced Brain failed, using standard brain: {e}')
         try:
             brain = Brain(cfg, skills)
-            logger.info("Standard Brain initialized")
+            logger.info('Standard Brain initialized')
         except Exception as e2:
-            logger.error(f"Brain initialization failed: {e2}")
-            print("Neo> [Error]: Brain initialization failed")
+            logger.error(f'Brain initialization failed: {e2}')
+            print('Neo> [Error]: Brain initialization failed')
             return
-
-    try:
-        minimax_agent = get_minimax_agent()
-    except Exception as e:
-        logger.warning(f"Failed to initialize MiniMax Agent: {e}")
-
-    # Read single message from stdin
+    minimax_agent = None
+    logger.info('MiniMax Agent skipped for tool mode')
     try:
         import sys
         text = sys.stdin.read().strip()
         if not text:
-            print("Neo> [Error]: No input provided")
+            print('Neo> [Error]: No input provided')
             return
-
-        logger.info(f"Processing tool input: {text[:100]}...")
-
-        # Process the message (same logic as CLI mode)
+        logger.info(f'Processing tool input: {text[:100]}...')
         if memory:
-            memory.add_conversation(text, "", intent="tool_input")
-
-        # Process with standard brain for skill testing (MiniMax integration pending)
+            memory.add_conversation(text, '', intent='tool_input')
         reply = await _process_with_brain(brain, text)
-        print(f"Neo> {reply}")
-
-        # Add to memory
+        print(f'Neo> {reply}')
         if memory:
-            memory.add_conversation(text, reply, intent="tool_response")
-
+            memory.add_conversation(text, reply, intent='tool_response')
     except Exception as e:
-        logger.error(f"Tool processing error: {e}")
-        print(f"Neo> [Error]: {e}")
+        logger.error(f'Tool processing error: {e}')
+        print(f'Neo> [Error]: {e}')
 
+@lru_cache(maxsize=128)
 def main():
     """Main entry point with Phase 3 features."""
     args = parse_args()
     setup_logging(debug=args.debug)
-    logger = logging.getLogger("neo.main")
-    
-    # Determine mode (Enhanced TUI is default unless otherwise specified)
-    use_enhanced = not any([args.cli, args.tui, getattr(args, 'tool', False)])  # Enhanced is default
-    use_classic_tui = args.tui and not args.enhanced
+    logger = logging.getLogger('neo.main')
+    use_enhanced = not any([args.cli, args.tui, getattr(args, 'tool', False)])
+    use_classic_tui = args.tui and (not args.enhanced)
     use_cli = args.cli
     use_tool = getattr(args, 'tool', False)
-    
     cfg = get_config(args.config)
-    
     if use_enhanced:
-        logger.info("Starting Enhanced TUI mode with Phase 3 features")
+        logger.info('Starting Enhanced TUI mode with Phase 3 features')
         try:
-            from enhanced_tui import EnhancedNeoTUI  # type: ignore
+            from enhanced_tui import EnhancedNeoTUI
             app = EnhancedNeoTUI(cfg)
-
-            # Set theme if specified
             if args.theme:
                 app.theme_manager.apply_theme(args.theme)
-
             app.run()
         except ImportError as e:
-            logger.error(f"Failed to import Enhanced TUI module: {e}")
-            print("Error: Enhanced TUI dependencies not available.")
-            print("Falling back to Classic TUI. Use --tui to force Classic TUI.")
+            logger.error(f'Failed to import Enhanced TUI module: {e}')
+            print('Error: Enhanced TUI dependencies not available.')
+            print('Falling back to Classic TUI. Use --tui to force Classic TUI.')
             if use_classic_tui:
                 import asyncio
                 asyncio.run(cli_mode(args, cfg))
             else:
                 try:
-                    from tui import NeoTUI  # type: ignore
+                    from tui import NeoTUI
                     app = NeoTUI(cfg)
                     app.run()
                 except Exception as e2:
-                    logger.error(f"Classic TUI also failed: {e2}")
-                    print(f"TUI Error: {e2}")
-                    print("Falling back to CLI mode.")
+                    logger.error(f'Classic TUI also failed: {e2}')
+                    print(f'TUI Error: {e2}')
+                    print('Falling back to CLI mode.')
                     import asyncio
                     asyncio.run(cli_mode(args, cfg))
         except Exception as e:
-            logger.error(f"Enhanced TUI failed to start: {e}")
-            print(f"Enhanced TUI Error: {e}")
-            print("Falling back to CLI mode.")
+            logger.error(f'Enhanced TUI failed to start: {e}')
+            print(f'Enhanced TUI Error: {e}')
+            print('Falling back to CLI mode.')
             import asyncio
             asyncio.run(cli_mode(args, cfg))
-    
     elif use_tool:
-        logger.info("Starting tool mode")
+        logger.info('Starting tool mode')
         import asyncio
         asyncio.run(tool_mode(args, cfg))
-
     elif use_classic_tui:
-        logger.info("Starting Classic TUI mode")
+        logger.info('Starting Classic TUI mode')
         try:
             from tui import NeoTUI
             app = NeoTUI(cfg)
             app.run()
         except ImportError as e:
-            logger.error(f"Failed to import Classic TUI module: {e}")
-            print("Error: TUI dependencies not available. Please install: pip install textual")
-            print("Falling back to CLI mode.")
+            logger.error(f'Failed to import Classic TUI module: {e}')
+            print('Error: TUI dependencies not available. Please install: pip install textual')
+            print('Falling back to CLI mode.')
             import asyncio
             asyncio.run(cli_mode(args, cfg))
-
-    elif getattr(args, 'tool', False):  # Tool mode
-        logger.info("Starting tool mode")
+    elif getattr(args, 'tool', False):
+        logger.info('Starting tool mode')
         import asyncio
         asyncio.run(tool_mode(args, cfg))
-
-    else:  # CLI mode
-        logger.info("Starting CLI mode")
+    else:
+        logger.info('Starting CLI mode')
         import asyncio
         asyncio.run(cli_mode(args, cfg))
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

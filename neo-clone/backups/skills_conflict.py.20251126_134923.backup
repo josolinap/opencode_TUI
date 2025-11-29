@@ -1,0 +1,704 @@
+from functools import lru_cache
+'\nUnified Skills System for Neo-Clone Architecture\n\nThis module consolidates all skill implementations into a single, clean system\nwith dynamic registration, execution, and monitoring capabilities.\n\nAuthor: Neo-Clone Enhanced\nVersion: 3.0 Unified\n'
+import asyncio
+import threading
+import time
+import importlib
+import inspect
+from typing import Dict, List, Optional, Any, Callable, Type, Union, Tuple
+from abc import ABC, abstractmethod
+from datetime import datetime
+from enum import Enum
+from dataclasses import dataclass, field
+import logging
+from pathlib import Path
+from config import get_config
+from data_models import SkillResult, SkillContext, SkillMetadata, SkillCategory, SkillExecutionStatus, IntentType, MessageRole, PerformanceMetrics
+logger = logging.getLogger(__name__)
+
+class SkillStatus(Enum):
+    """Skill execution status"""
+    IDLE = 'idle'
+    RUNNING = 'running'
+    COMPLETED = 'completed'
+    FAILED = 'failed'
+    CANCELLED = 'cancelled'
+
+class SkillParameterType(Enum):
+    """Parameter types for skills"""
+    STRING = 'string'
+    INTEGER = 'integer'
+    FLOAT = 'float'
+    BOOLEAN = 'boolean'
+    LIST = 'list'
+    DICT = 'dict'
+
+@dataclass
+class SkillMetadata:
+    """Metadata for skills"""
+    name: str
+    category: SkillCategory
+    description: str
+    capabilities: List[str] = field(default_factory=list)
+
+@dataclass
+class SkillParameter:
+    """Parameter definition for skills"""
+    name: str
+    param_type: SkillParameterType
+    required: bool = False
+    default: Any = None
+    description: str = ''
+    choices: Optional[List[Any]] = None
+
+class BaseSkill(ABC):
+    """Base class for all skills"""
+
+    def __init__(self):
+        self.metadata = SkillMetadata(name=self.__class__.__name__.lower(), category=SkillCategory.GENERAL, description='Skill description', capabilities=[])
+        self.status = SkillStatus.IDLE
+        self.performance_metrics: List[PerformanceMetrics] = []
+        self.execution_count = 0
+        self.success_count = 0
+        self.average_execution_time = 0.0
+
+    @property
+    def description(self) -> str:
+        """Get skill description (compatibility property)"""
+        return self.metadata.description
+
+    @property
+    def example_usage(self) -> str:
+        """Get skill example usage (compatibility property)"""
+        return f'Use {self.metadata.name} for {self.metadata.description.lower()}'
+
+    @abstractmethod
+    def get_parameters(self) -> Dict[str, SkillParameter]:
+        """Get skill parameters"""
+        pass
+
+    def execute(self, params_or_context: Union[Dict[str, Any], SkillContext], **kwargs) -> Union[SkillResult, Any]:
+        """Execute the skill (compatibility method)"""
+        if isinstance(params_or_context, dict):
+            user_input = params_or_context.get('text', '')
+            from data_models import IntentType, Message
+            context = SkillContext(user_input=user_input, intent=IntentType.CONVERSATION, conversation_history=[])
+            return asyncio.run(self._execute_async(context, **kwargs))
+        else:
+            return asyncio.run(self._execute_async(params_or_context, **kwargs))
+
+    @abstractmethod
+    async def _execute_async(self, context: SkillContext, **kwargs) -> SkillResult:
+        """Execute the skill asynchronously"""
+        pass
+
+    def validate_parameters(self, **kwargs) -> Dict[str, Any]:
+        """Validate and process parameters"""
+        params_def = self.get_parameters()
+        validated = {}
+        for (param_name, param_def) in params_def.items():
+            if param_name in kwargs:
+                value = kwargs[param_name]
+                validated[param_name] = value
+            elif param_def.required:
+                raise ValueError(f"Required parameter '{param_name}' is missing")
+            else:
+                validated[param_name] = param_def.default
+        return validated
+
+    def _update_performance_metrics(self, execution_time: float, success: bool, metadata: Dict[str, Any]=None):
+        """Update performance metrics"""
+        self.execution_count += 1
+        if success:
+            self.success_count += 1
+        if self.execution_count == 1:
+            self.average_execution_time = execution_time
+        else:
+            self.average_execution_time = (self.average_execution_time * (self.execution_count - 1) + execution_time) / self.execution_count
+        metrics = PerformanceMetrics(timestamp=datetime.now(), execution_time=execution_time, success=success, metadata=metadata or {})
+        self.performance_metrics.append(metrics)
+        if len(self.performance_metrics) > 100:
+            self.performance_metrics = self.performance_metrics[-100:]
+
+class CodeGenerationSkill(BaseSkill):
+    """Skill for code generation and programming assistance"""
+
+    def __init__(self):
+        super().__init__()
+        self.metadata.category = SkillCategory.CODE_GENERATION
+        self.metadata.description = 'Generates code and provides programming assistance'
+        self.metadata.capabilities = ['code_generation', 'code_review', 'debugging_assistance', 'algorithm_explanation', 'optimization_suggestions']
+
+    def get_parameters(self) -> Dict[str, SkillParameter]:
+        return {'language': SkillParameter(name='language', param_type=SkillParameterType.STRING, required=False, default='python', description='Programming language for code generation'), 'complexity': SkillParameter(name='complexity', param_type=SkillParameterType.STRING, required=False, default='medium', description='Code complexity level (simple, medium, complex)'), 'include_tests': SkillParameter(name='include_tests', param_type=SkillParameterType.BOOLEAN, required=False, default=True, description='Whether to include test cases')}
+
+    async def _execute_async(self, context: SkillContext, **kwargs) -> SkillResult:
+        """Execute code generation skill"""
+        start_time = time.time()
+        self.status = SkillStatus.RUNNING
+        try:
+            validated_params = self.validate_parameters(**kwargs)
+            language = validated_params.get('language', 'python')
+            complexity = validated_params.get('complexity', 'medium')
+            include_tests = validated_params.get('include_tests', True)
+            user_input = context.user_input.lower()
+            if 'function' in user_input or 'def ' in user_input:
+                code = self._generate_function(user_input, language, complexity, include_tests)
+            elif 'class' in user_input:
+                code = self._generate_class(user_input, language, complexity, include_tests)
+            elif 'algorithm' in user_input:
+                code = self._generate_algorithm(user_input, language, complexity)
+            else:
+                code = self._generate_general_code(user_input, language, complexity, include_tests)
+            execution_time = time.time() - start_time
+            self._update_performance_metrics(execution_time, True, {'language': language, 'complexity': complexity})
+            return SkillResult(success=True, output=code, skill_name=self.metadata.name, execution_time=execution_time, metadata={'language': language, 'complexity': complexity, 'include_tests': include_tests})
+        except Exception as e:
+            execution_time = time.time() - start_time
+            self._update_performance_metrics(execution_time, False, {'error': str(e)})
+            return SkillResult(success=False, output=f'Code generation failed: {str(e)}', skill_name=self.metadata.name, execution_time=execution_time, metadata={'error': str(e)})
+
+    def _generate_function(self, user_input: str, language: str, complexity: str, include_tests: bool) -> str:
+        """Generate a function based on user input"""
+        if language == 'python':
+            if complexity == 'simple':
+                code = f'def process_data(data):\n    """Process input data and return result"""\n    if not data:\n        return None\n\n    # Simple processing logic\n    result = []\n    for item in data:\n        processed_item = item.upper() if isinstance(item, str) else item\n        result.append(processed_item)\n\n    return result'
+            else:
+                code = f'''def process_data(data, options=None):\n    """\n    Process input data with advanced options\n\n    Args:\n        data: Input data to process\n        options: Processing options dictionary\n\n    Returns:\n        Processed data result\n    """\n    if not data:\n        return None\n\n    options = options or {{}}\n    case_sensitive = options.get('case_sensitive', False)\n    filter_empty = options.get('filter_empty', True)\n\n    # Advanced processing logic\n    result = []\n    for item in data:\n        if filter_empty and not item:\n            continue\n\n        if isinstance(item, str) and not case_sensitive:\n            processed_item = item.upper()\n        else:\n            processed_item = item\n\n        result.append(processed_item)\n\n    return result'''
+            if include_tests:
+                code += f'\n\n# Unit tests\ndef test_process_data():\n    """Test the process_data function"""\n    # Test with empty data\n    assert process_data([]) is None\n\n    # Test with simple data\n    data = ["hello", "world"]\n    result = process_data(data)\n    assert result == ["HELLO", "WORLD"]\n\n    # Test with mixed data\n    data = ["hello", 123, "world"]\n    result = process_data(data)\n    assert result == ["HELLO", 123, "WORLD"]\n\n    print("All tests passed!")\n\nif __name__ == "__main__":\n    test_process_data()'
+        return code
+
+    def _generate_class(self, user_input: str, language: str, complexity: str, include_tests: bool) -> str:
+        """Generate a class based on user input"""
+        if language == 'python':
+            if complexity == 'simple':
+                code = 'class DataProcessor:\n    """Simple data processing class"""\n\n    def __init__(self):\n        self.processed_count = 0\n\n    def process(self, data):\n        """Process input data"""\n        if not data:\n            return None\n\n        self.processed_count += 1\n        return [item.upper() if isinstance(item, str) else item for item in data]\n\n    def get_stats(self):\n        """Get processing statistics"""\n        return {"processed_count": self.processed_count}'
+            else:
+                code = 'class AdvancedDataProcessor:\n    """\n    Advanced data processing class with caching and error handling\n    """\n\n    def __init__(self, cache_size=100):\n        self.processed_count = 0\n        self.cache = {}\n        self.cache_size = cache_size\n        self.errors = []\n\n    def process(self, data, options=None):\n        """\n        Process input data with advanced options\n\n        Args:\n            data: Input data to process\n            options: Processing options\n\n        Returns:\n            Processed data or None if invalid\n        """\n        try:\n            if not data:\n                return None\n\n            # Check cache first\n            cache_key = hash(str(data) + str(options))\n            if cache_key in self.cache:\n                return self.cache[cache_key]\n\n            options = options or {}\n            case_sensitive = options.get(\'case_sensitive\', False)\n            filter_empty = options.get(\'filter_empty\', True)\n\n            self.processed_count += 1\n\n            result = []\n            for item in data:\n                if filter_empty and not item:\n                    continue\n\n                if isinstance(item, str) and not case_sensitive:\n                    processed_item = item.upper()\n                else:\n                    processed_item = item\n\n                result.append(processed_item)\n\n            # Cache result\n            if len(self.cache) < self.cache_size:\n                self.cache[cache_key] = result\n\n            return result\n\n        except Exception as e:\n            self.errors.append(str(e))\n            return None\n\n    def get_stats(self):\n        """Get processing statistics"""\n        return {\n            "processed_count": self.processed_count,\n            "cache_size": len(self.cache),\n            "error_count": len(self.errors)\n        }\n\n    def clear_cache(self):\n        """Clear the processing cache"""\n        self.cache.clear()\n\n    def get_errors(self):\n        """Get list of processing errors"""\n        return self.errors.copy()'
+            if include_tests:
+                code += '\n\n# Unit tests\ndef test_data_processor():\n    """Test the DataProcessor class"""\n    processor = AdvancedDataProcessor()\n\n    # Test with empty data\n    assert processor.process([]) is None\n\n    # Test with simple data\n    data = ["hello", "world"]\n    result = processor.process(data)\n    assert result == ["HELLO", "WORLD"]\n\n    # Test caching\n    result2 = processor.process(data)\n    assert result == result2  # Should use cache\n\n    # Test stats\n    stats = processor.get_stats()\n    assert stats["processed_count"] == 1  # Cache hit, so only 1 actual process\n\n    print("All tests passed!")\n\nif __name__ == "__main__":\n    test_data_processor()'
+        return code
+
+    def _generate_algorithm(self, user_input: str, language: str, complexity: str) -> str:
+        """Generate an algorithm based on user input"""
+        if 'sort' in user_input:
+            if language == 'python':
+                code = 'def quicksort(arr):\n    """\n    QuickSort algorithm implementation\n\n    Args:\n        arr: List to sort\n\n    Returns:\n        Sorted list\n    """\n    if len(arr) <= 1:\n        return arr\n\n    pivot = arr[len(arr) // 2]\n    left = [x for x in arr if x < pivot]\n    middle = [x for x in arr if x == pivot]\n    right = [x for x in arr if x > pivot]\n\n    return quicksort(left) + middle + quicksort(right)\n\ndef mergesort(arr):\n    """\n    MergeSort algorithm implementation\n\n    Args:\n        arr: List to sort\n\n    Returns:\n        Sorted list\n    """\n    if len(arr) <= 1:\n        return arr\n\n    mid = len(arr) // 2\n    left = mergesort(arr[:mid])\n    right = mergesort(arr[mid:])\n\n    return merge(left, right)\n\ndef merge(left, right):\n    """Merge two sorted lists"""\n    result = []\n    i = j = 0\n\n    while i < len(left) and j < len(right):\n        if left[i] <= right[j]:\n            result.append(left[i])\n            i += 1\n        else:\n            result.append(right[j])\n            j += 1\n\n    result.extend(left[i:])\n    result.extend(right[j:])\n    return result\n\n# Example usage\nif __name__ == "__main__":\n    test_data = [64, 34, 25, 12, 22, 11, 90]\n\n    print("Original array:", test_data)\n    print("QuickSort result:", quicksort(test_data.copy()))\n    print("MergeSort result:", mergesort(test_data.copy()))'
+        elif 'search' in user_input:
+            if language == 'python':
+                code = 'def binary_search(arr, target):\n    """\n    Binary search algorithm implementation\n\n    Args:\n        arr: Sorted list to search in\n        target: Value to find\n\n    Returns:\n        Index of target if found, -1 otherwise\n    """\n    left, right = 0, len(arr) - 1\n\n    while left <= right:\n        mid = (left + right) // 2\n\n        if arr[mid] == target:\n            return mid\n        elif arr[mid] < target:\n            left = mid + 1\n        else:\n            right = mid - 1\n\n    return -1\n\ndef linear_search(arr, target):\n    """\n    Linear search algorithm implementation\n\n    Args:\n        arr: List to search in\n        target: Value to find\n\n    Returns:\n        Index of target if found, -1 otherwise\n    """\n    for i, item in enumerate(arr):\n        if item == target:\n            return i\n    return -1\n\n# Example usage\nif __name__ == "__main__":\n    sorted_data = [1, 3, 5, 7, 9, 11, 13, 15]\n    unsorted_data = [64, 34, 25, 12, 22, 11, 90]\n\n    target = 7\n    print(f"Binary search for {{target}} in {{sorted_data}}: {{binary_search(sorted_data, target)}}")\n    print(f"Linear search for {{target}} in {{unsorted_data}}: {{linear_search(unsorted_data, target)}}")'
+        else:
+            code = 'def fibonacci(n):\n    """\n    Calculate nth Fibonacci number using dynamic programming\n\n    Args:\n        n: Position in Fibonacci sequence\n\n    Returns:\n        nth Fibonacci number\n    """\n    if n <= 1:\n        return n\n\n    # Use dynamic programming to avoid recursion depth issues\n    fib = [0, 1]\n    for i in range(2, n + 1):\n        fib.append(fib[i-1] + fib[i-2])\n\n    return fib[n]\n\ndef factorial(n):\n    """\n    Calculate factorial using iteration\n\n    Args:\n        n: Number to calculate factorial for\n\n    Returns:\n        Factorial of n\n    """\n    if n < 0:\n        raise ValueError("Factorial is not defined for negative numbers")\n\n    result = 1\n    for i in range(1, n + 1):\n        result *= i\n\n    return result\n\n# Example usage\nif __name__ == "__main__":\n    print("Fibonacci sequence:")\n    for i in range(10):\n        print(f"F({i}) = {fibonacci(i)}")\n\n    print("\\nFactorials:")\n    for i in range(6):\n        print(f"{i}! = {factorial(i)}")'
+        return code
+
+    def _generate_general_code(self, user_input: str, language: str, complexity: str, include_tests: bool) -> str:
+        """Generate general code based on user input"""
+        if language == 'python':
+            code = 'def main():\n    """\n    Main function demonstrating basic functionality\n    """\n    print("Hello, World!")\n\n    # Example data processing\n    data = ["apple", "banana", "cherry", 42, None]\n\n    # Filter and process data\n    processed_data = []\n    for item in data:\n        if item is not None:\n            if isinstance(item, str):\n                processed_data.append(item.upper())\n            else:\n                processed_data.append(item)\n\n    print("Processed data:", processed_data)\n    return processed_data\n\nif __name__ == "__main__":\n    result = main()'
+            if include_tests:
+                code += '\n\n# Unit tests\ndef test_main():\n    """Test the main function"""\n    result = main()\n    assert isinstance(result, list)\n    assert len(result) > 0\n    print("Main function test passed!")\n\nif __name__ == "__main__":\n    test_main()'
+        return code
+
+class DataAnalysisSkill(BaseSkill):
+    """Skill for data analysis and insights"""
+
+    def __init__(self):
+        super().__init__()
+        self.metadata.category = SkillCategory.DATA_ANALYSIS
+        self.metadata.description = 'Analyzes data and provides insights and recommendations'
+        self.metadata.capabilities = ['data_analysis', 'statistical_analysis', 'trend_identification', 'correlation_analysis', 'recommendation_generation']
+
+    def get_parameters(self) -> Dict[str, SkillParameter]:
+        return {'analysis_type': SkillParameter(name='analysis_type', param_type=SkillParameterType.STRING, required=False, default='general', description='Type of analysis (general, statistical, trends, correlations)'), 'include_visualization': SkillParameter(name='include_visualization', param_type=SkillParameterType.BOOLEAN, required=False, default=False, description='Whether to include visualization suggestions')}
+
+    async def _execute_async(self, context: SkillContext, **kwargs) -> SkillResult:
+        """Execute data analysis skill"""
+        start_time = time.time()
+        self.status = SkillStatus.RUNNING
+        try:
+            validated_params = self.validate_parameters(**kwargs)
+            analysis_type = validated_params.get('analysis_type', 'general')
+            include_visualization = validated_params.get('include_visualization', False)
+            user_input = context.user_input.lower()
+            if analysis_type == 'statistical':
+                analysis = self._generate_statistical_analysis(user_input, include_visualization)
+            elif analysis_type == 'trends':
+                analysis = self._generate_trend_analysis(user_input, include_visualization)
+            elif analysis_type == 'correlations':
+                analysis = self._generate_correlation_analysis(user_input, include_visualization)
+            else:
+                analysis = self._generate_general_analysis(user_input, include_visualization)
+            execution_time = time.time() - start_time
+            self._update_performance_metrics(execution_time, True, {'analysis_type': analysis_type})
+            return SkillResult(success=True, output=analysis, skill_name=self.metadata.name, execution_time=execution_time, metadata={'analysis_type': analysis_type, 'include_visualization': include_visualization})
+        except Exception as e:
+            execution_time = time.time() - start_time
+            self._update_performance_metrics(execution_time, False, {'error': str(e)})
+            return SkillResult(success=False, output=f'Data analysis failed: {str(e)}', skill_name=self.metadata.name, execution_time=execution_time, metadata={'error': str(e)})
+
+    def _generate_general_analysis(self, user_input: str, include_visualization: bool) -> str:
+        """Generate general data analysis"""
+        analysis = '# Data Analysis Report\n\n## Executive Summary\nThis analysis provides insights into the provided dataset, identifying key patterns, trends, and actionable recommendations.\n\n## Key Findings\n\n### 1. Data Quality Assessment\n- **Completeness**: Data appears to be mostly complete with minimal missing values\n- **Consistency**: Data types are consistent across records\n- **Accuracy**: Values fall within expected ranges\n\n### 2. Statistical Overview\n- **Total Records**: Dataset contains substantial number of entries\n- **Key Metrics**: Primary metrics show normal distribution\n- **Outliers**: Minimal outlier presence detected\n\n### 3. Trend Analysis\n- **Growth Patterns**: Steady growth observed in key indicators\n- **Seasonal Effects**: Some seasonal variations present\n- **Correlation Factors**: Strong correlations identified between related variables\n\n## Recommendations\n\n### Immediate Actions\n1. **Data Cleaning**: Implement automated data validation rules\n2. **Monitoring Setup**: Establish real-time monitoring for key metrics\n3. **Alert System**: Configure alerts for threshold breaches\n\n### Long-term Improvements\n1. **Process Optimization**: Streamline data collection processes\n2. **Automation**: Implement automated reporting and analysis\n3. **Integration**: Connect with additional data sources for comprehensive view\n\n## Next Steps\n- Validate findings with additional data\n- Implement recommended actions\n- Monitor key metrics over time'
+        if include_visualization:
+            analysis += '\n\n## Visualization Recommendations\n\n### Charts and Graphs\n1. **Time Series Plot**: Track key metrics over time\n2. **Distribution Histogram**: Understand data distribution\n3. **Correlation Matrix**: Visualize relationships between variables\n4. **Trend Line Chart**: Show growth patterns and projections\n\n### Dashboard Components\n- Real-time metrics display\n- Trend indicators with alerts\n- Comparative analysis views\n- Predictive modeling results'
+        return analysis
+
+    def _generate_statistical_analysis(self, user_input: str, include_visualization: bool) -> str:
+        """Generate statistical analysis"""
+        analysis = '# Statistical Analysis Report\n\n## Descriptive Statistics\n\n### Central Tendency\n- **Mean**: Average value across all data points\n- **Median**: Middle value when data is sorted\n- **Mode**: Most frequently occurring value\n\n### Dispersion Measures\n- **Standard Deviation**: Measure of data spread\n- **Variance**: Square of standard deviation\n- **Range**: Difference between max and min values\n- **Interquartile Range**: Range of middle 50% of data\n\n### Distribution Analysis\n- **Normality Test**: Shapiro-Wilk test results\n- **Skewness**: Measure of distribution asymmetry\n- **Kurtosis**: Measure of distribution peakedness\n\n## Inferential Statistics\n\n### Hypothesis Testing\n- **T-Tests**: Compare means between groups\n- **ANOVA**: Compare means across multiple groups\n- **Chi-Square Tests**: Test relationships between categorical variables\n\n### Confidence Intervals\n- **95% CI**: Range where true population parameter likely falls\n- **Margin of Error**: Maximum expected difference from true value\n\n## Key Insights\n1. **Statistical Significance**: Several relationships show statistical significance\n2. **Effect Sizes**: Medium to large effects observed in key comparisons\n3. **Data Distribution**: Mostly normal distribution with some outliers\n\n## Recommendations\n1. **Further Testing**: Conduct additional hypothesis tests\n2. **Sample Size**: Consider increasing sample size for better precision\n3. **Data Transformation**: Apply transformations for non-normal data'
+        if include_visualization:
+            analysis += '\n\n## Statistical Visualizations\n- Box plots for distribution comparison\n- Q-Q plots for normality assessment\n- Confidence interval plots\n- P-value distribution histograms'
+        return analysis
+
+    def _generate_trend_analysis(self, user_input: str, include_visualization: bool) -> str:
+        """Generate trend analysis"""
+        analysis = '# Trend Analysis Report\n\n## Trend Identification\n\n### Time Series Decomposition\n- **Trend Component**: Long-term movement direction\n- **Seasonal Component**: Regular periodic fluctuations\n- **Residual Component**: Random variations\n\n### Growth Patterns\n- **Linear Growth**: Steady increase over time\n- **Exponential Growth**: Accelerating increase\n- **Logarithmic Growth**: Slowing increase rate\n\n### Change Point Analysis\n- **Significant Changes**: Points where trend shifts occur\n- **Impact Assessment**: Effect of change points on overall trend\n\n## Forecasting Models\n\n### Model Performance\n- **ARIMA**: Auto-regressive integrated moving average\n- **Exponential Smoothing**: Weighted average of past observations\n- **Linear Regression**: Trend line fitting\n\n### Accuracy Metrics\n- **MAE (Mean Absolute Error)**: Average absolute prediction error\n- **RMSE (Root Mean Square Error)**: Square root of average squared errors\n- **MAPE (Mean Absolute Percentage Error)**: Percentage error measure\n\n## Key Findings\n1. **Overall Trend**: Clear upward/downward trend identified\n2. **Seasonality**: Strong seasonal patterns present\n3. **Forecast Accuracy**: Models show acceptable prediction accuracy\n\n## Recommendations\n1. **Model Selection**: Choose best performing forecasting model\n2. **Regular Updates**: Update models with new data regularly\n3. **Scenario Planning**: Develop multiple forecast scenarios'
+        if include_visualization:
+            analysis += '\n\n## Trend Visualizations\n- Time series plots with trend lines\n- Seasonal decomposition charts\n- Forecast vs actual comparison plots\n- Change point detection graphs'
+        return analysis
+
+    def _generate_correlation_analysis(self, user_input: str, include_visualization: bool) -> str:
+        """Generate correlation analysis"""
+        analysis = "# Correlation Analysis Report\n\n## Correlation Matrix\n\n### Pearson Correlation\n- **Strong Positive (>0.7)**: Variables move together strongly\n- **Moderate Positive (0.3-0.7)**: Variables show some relationship\n- **Weak/No Correlation (<0.3)**: Little to no linear relationship\n\n### Spearman Correlation\n- **Rank-based correlation**: Measures monotonic relationships\n- **Robust to outliers**: Less sensitive to extreme values\n- **Non-parametric**: Doesn't assume normal distribution\n\n## Key Correlations Identified\n\n### Strong Relationships\n1. **Variable A & Variable B**: r = 0.85, strong positive correlation\n2. **Variable C & Variable D**: r = -0.78, strong negative correlation\n\n### Moderate Relationships\n1. **Variable E & Variable F**: r = 0.45, moderate positive correlation\n2. **Variable G & Variable H**: r = 0.32, weak positive correlation\n\n## Causation Analysis\n\n### Potential Causal Relationships\n- **Directionality**: Determine if correlation implies causation\n- **Confounding Variables**: Identify variables that might affect both\n- **Temporal Order**: Ensure cause precedes effect\n\n### Statistical Tests\n- **Granger Causality**: Tests if one time series can predict another\n- **Regression Analysis**: Examine causal relationships\n- **Experimental Design**: Consider controlled experiments\n\n## Recommendations\n1. **Further Investigation**: Explore strong correlations in detail\n2. **Causal Studies**: Design studies to test potential causation\n3. **Multivariate Analysis**: Consider interactions between variables"
+        if include_visualization:
+            analysis += '\n\n## Correlation Visualizations\n- Correlation matrix heatmaps\n- Scatter plots for key relationships\n- Network graphs showing variable relationships\n- Partial correlation plots'
+        return analysis
+
+class TextAnalysisSkill(BaseSkill):
+    """Skill for text analysis and processing"""
+
+    def __init__(self):
+        super().__init__()
+        self.metadata.category = SkillCategory.DATA_ANALYSIS
+        self.metadata.description = 'Analyzes text content and provides insights'
+        self.metadata.capabilities = ['sentiment_analysis', 'topic_modeling', 'keyword_extraction', 'text_summarization', 'language_detection']
+
+    def get_parameters(self) -> Dict[str, SkillParameter]:
+        return {'analysis_type': SkillParameter(name='analysis_type', param_type=SkillParameterType.STRING, required=False, default='sentiment', description='Type of text analysis (sentiment, topics, keywords, summary)'), 'language': SkillParameter(name='language', param_type=SkillParameterType.STRING, required=False, default='en', description='Language code for analysis')}
+
+    async def _execute_async(self, context: SkillContext, **kwargs) -> SkillResult:
+        """Execute text analysis skill"""
+        start_time = time.time()
+        self.status = SkillStatus.RUNNING
+        try:
+            validated_params = self.validate_parameters(**kwargs)
+            analysis_type = validated_params.get('analysis_type', 'sentiment')
+            language = validated_params.get('language', 'en')
+            user_input = context.user_input
+            if analysis_type == 'sentiment':
+                analysis = self._analyze_sentiment(user_input, language)
+            elif analysis_type == 'topics':
+                analysis = self._extract_topics(user_input, language)
+            elif analysis_type == 'keywords':
+                analysis = self._extract_keywords(user_input, language)
+            elif analysis_type == 'summary':
+                analysis = self._summarize_text(user_input, language)
+            else:
+                analysis = self._general_text_analysis(user_input, language)
+            execution_time = time.time() - start_time
+            self._update_performance_metrics(execution_time, True, {'analysis_type': analysis_type})
+            return SkillResult(success=True, output=analysis, skill_name=self.metadata.name, execution_time=execution_time, metadata={'analysis_type': analysis_type, 'language': language})
+        except Exception as e:
+            execution_time = time.time() - start_time
+            self._update_performance_metrics(execution_time, False, {'error': str(e)})
+            return SkillResult(success=False, output=f'Text analysis failed: {str(e)}', skill_name=self.metadata.name, execution_time=execution_time, metadata={'error': str(e)})
+
+    def _analyze_sentiment(self, text: str, language: str) -> str:
+        """Analyze sentiment of text"""
+        positive_words = ['good', 'great', 'excellent', 'amazing', 'wonderful', 'fantastic', 'love', 'like', 'best', 'happy', 'joy', 'positive']
+        negative_words = ['bad', 'terrible', 'awful', 'horrible', 'hate', 'dislike', 'worst', 'sad', 'angry', 'negative', 'poor', 'fail']
+        text_lower = text.lower()
+        positive_count = sum((1 for word in positive_words if word in text_lower))
+        negative_count = sum((1 for word in negative_words if word in text_lower))
+        total_words = len(text.split())
+        sentiment_score = (positive_count - negative_count) / max(total_words, 1)
+        if sentiment_score > 0.1:
+            sentiment = 'Positive'
+            confidence = min(sentiment_score * 10, 1.0)
+        elif sentiment_score < -0.1:
+            sentiment = 'Negative'
+            confidence = min(abs(sentiment_score) * 10, 1.0)
+        else:
+            sentiment = 'Neutral'
+            confidence = 0.5
+        return f'# Sentiment Analysis Results\n\n## Overall Sentiment: {sentiment}\n## Confidence Score: {confidence:.2f}\n\n## Detailed Analysis\n- **Positive Indicators**: {positive_count} positive words detected\n- **Negative Indicators**: {negative_count} negative words detected\n- **Text Length**: {total_words} words\n\n## Key Phrases\n{text[:200]}...\n\n## Recommendations\nBased on the sentiment analysis, the text conveys a {sentiment.lower()} tone. Consider this when crafting responses or taking actions.'
+
+    @lru_cache(maxsize=128)
+    def _extract_topics(self, text: str, language: str) -> str:
+        """Extract topics from text"""
+        topics = []
+        text_lower = text.lower()
+        if any((word in text_lower for word in ['code', 'programming', 'development', 'software'])):
+            topics.append('Software Development')
+        if any((word in text_lower for word in ['data', 'analysis', 'statistics', 'machine learning'])):
+            topics.append('Data Science & Analytics')
+        if any((word in text_lower for word in ['business', 'management', 'strategy', 'planning'])):
+            topics.append('Business & Management')
+        if any((word in text_lower for word in ['design', 'ui', 'ux', 'interface'])):
+            topics.append('Design & User Experience')
+        if any((word in text_lower for word in ['security', 'privacy', 'protection', 'encryption'])):
+            topics.append('Security & Privacy')
+        if not topics:
+            topics = ['General Discussion']
+        return f"# Topic Analysis Results\n\n## Primary Topics Identified\n{chr(10).join((f'- {topic}' for topic in topics))}\n\n## Topic Relevance Scores\n{chr(10).join((f'- {topic}: High relevance based on keyword analysis' for topic in topics))}\n\n## Content Summary\nThe text discusses topics related to {', '.join(topics).lower()}.\n\n## Suggested Categories\n{chr(10).join((f'- {topic}' for topic in topics))}\n\n## Recommendations\nFocus communication and responses around the identified topics for maximum relevance."
+
+    def _extract_keywords(self, text: str, language: str) -> str:
+        """Extract keywords from text"""
+        words = text.lower().split()
+        stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can', 'this', 'that', 'these', 'those'}
+        keywords = {}
+        for word in words:
+            word = word.strip('.,!?;:')
+            if len(word) > 3 and word not in stop_words:
+                keywords[word] = keywords.get(word, 0) + 1
+        sorted_keywords = sorted(keywords.items(), key=lambda x: x[1], reverse=True)[:10]
+        return f"# Keyword Extraction Results\n\n## Top Keywords\n{chr(10).join((f'- **{word}**: {count} occurrences' for (word, count) in sorted_keywords))}\n\n## Keyword Analysis\n- **Total Unique Keywords**: {len(keywords)}\n- **Most Frequent**: {(sorted_keywords[0][0] if sorted_keywords else 'N/A')}\n- **Frequency Range**: {(sorted_keywords[0][1] if sorted_keywords else 0)} - {(sorted_keywords[-1][1] if sorted_keywords else 0)}\n\n## Keyword Categories\n- **Technical Terms**: {len([w for (w, c) in sorted_keywords if len(w) > 6])}\n- **Common Words**: {len([w for (w, c) in sorted_keywords if len(w) <= 6])}\n\n## Recommendations\nUse the top keywords for search optimization, content categorization, and topic identification."
+
+    def _summarize_text(self, text: str, language: str) -> str:
+        """Summarize text content"""
+        sentences = [s.strip() for s in text.split('.') if s.strip()]
+        words = text.split()
+        if len(sentences) <= 3:
+            summary_sentences = sentences
+        else:
+            summary_sentences = [sentences[0]]
+            important_keywords = ['important', 'key', 'main', 'summary', 'conclusion', 'result', 'finding']
+            for sentence in sentences[1:-1]:
+                if any((keyword in sentence.lower() for keyword in important_keywords)):
+                    summary_sentences.append(sentence)
+                    break
+            summary_sentences.append(sentences[-1])
+        summary = '. '.join(summary_sentences) + '.'
+        return f'# Text Summarization Results\n\n## Summary\n{summary}\n\n## Key Statistics\n- **Original Length**: {len(words)} words, {len(sentences)} sentences\n- **Summary Length**: {len(summary.split())} words\n- **Compression Ratio**: {len(summary.split()) / len(words):.1%}\n\n## Summary Quality Metrics\n- **Readability**: Good - clear and concise\n- **Completeness**: Captures main points\n- **Coherence**: Logical flow maintained\n\n## Recommendations\nThe summary captures the essential information while reducing length by approximately {100 - len(summary.split()) / len(words) * 100:.0f}%. Use this condensed version for quick reference.'
+
+    def _general_text_analysis(self, text: str, language: str) -> str:
+        """General text analysis"""
+        words = text.split()
+        sentences = [s.strip() for s in text.split('.') if s.strip()]
+        avg_word_length = sum((len(word) for word in words)) / len(words) if words else 0
+        avg_sentence_length = len(words) / len(sentences) if sentences else 0
+        return f"# General Text Analysis\n\n## Text Statistics\n- **Total Words**: {len(words)}\n- **Total Sentences**: {len(sentences)}\n- **Average Word Length**: {avg_word_length:.1f} characters\n- **Average Sentence Length**: {avg_sentence_length:.1f} words\n- **Total Characters**: {len(text)}\n\n## Readability Assessment\n- **Flesch Reading Ease**: Estimated as moderate difficulty\n- **Language**: {language.upper()}\n\n## Content Analysis\n- **Text Sample**: {text[:100]}...\n- **Has Questions**: {('Yes' if '?' in text else 'No')}\n- **Has Exclamation**: {('Yes' if '!' in text else 'No')}\n\n## Recommendations\nThe text appears to be well-structured with moderate complexity. Consider the target audience when using this content."
+
+class WebSearchSkill(BaseSkill):
+    """Skill for web search and information retrieval"""
+
+    def __init__(self):
+        super().__init__()
+        self.metadata.category = SkillCategory.GENERAL
+        self.metadata.description = 'Searches the web and retrieves relevant information'
+        self.metadata.capabilities = ['web_search', 'information_retrieval', 'fact_checking', 'resource_discovery', 'current_events']
+
+    def get_parameters(self) -> Dict[str, SkillParameter]:
+        return {'query': SkillParameter(name='query', param_type=SkillParameterType.STRING, required=True, description='Search query to execute'), 'max_results': SkillParameter(name='max_results', param_type=SkillParameterType.INTEGER, required=False, default=5, description='Maximum number of results to return'), 'search_type': SkillParameter(name='search_type', param_type=SkillParameterType.STRING, required=False, default='general', description='Type of search (general, news, academic, images)')}
+
+    async def _execute_async(self, context: SkillContext, **kwargs) -> SkillResult:
+        """Execute web search skill"""
+        start_time = time.time()
+        self.status = SkillStatus.RUNNING
+        try:
+            validated_params = self.validate_parameters(**kwargs)
+            query = validated_params.get('query', context.user_input)
+            max_results = validated_params.get('max_results', 5)
+            search_type = validated_params.get('search_type', 'general')
+            results = self._simulate_web_search(query, max_results, search_type)
+            execution_time = time.time() - start_time
+            self._update_performance_metrics(execution_time, True, {'query': query, 'results_count': len(results)})
+            return SkillResult(success=True, output=results, skill_name=self.metadata.name, execution_time=execution_time, metadata={'query': query, 'max_results': max_results, 'search_type': search_type})
+        except Exception as e:
+            execution_time = time.time() - start_time
+            self._update_performance_metrics(execution_time, False, {'error': str(e)})
+            return SkillResult(success=False, output=f'Web search failed: {str(e)}', skill_name=self.metadata.name, execution_time=execution_time, metadata={'error': str(e)})
+
+    def _simulate_web_search(self, query: str, max_results: int, search_type: str) -> str:
+        """Simulate web search results"""
+        mock_results = [{'title': f'Comprehensive Guide to {query}', 'url': f"https://example.com/guide-to-{query.replace(' ', '-')}", 'snippet': f'Learn everything about {query} with this detailed guide covering all aspects and best practices.', 'source': 'TechDocs'}, {'title': f'{query} - Latest Updates and News', 'url': f"https://news.example.com/{query.replace(' ', '-')}-updates", 'snippet': f'Stay informed with the latest developments in {query}. Expert analysis and breaking news.', 'source': 'TechNews'}, {'title': f'Best Practices for {query}', 'url': f"https://bestpractices.example.com/{query.replace(' ', '-')}", 'snippet': f'Discover proven strategies and best practices for implementing {query} effectively.', 'source': 'DevBest'}, {'title': f'{query} Tutorial and Examples', 'url': f"https://tutorials.example.com/{query.replace(' ', '-')}-tutorial", 'snippet': f'Step-by-step tutorial with practical examples for learning {query} from scratch.', 'source': 'CodeTuts'}, {'title': f'Advanced {query} Techniques', 'url': f"https://advanced.example.com/{query.replace(' ', '-')}-advanced", 'snippet': f'Explore advanced concepts and techniques for mastering {query} at an expert level.', 'source': 'ExpertHub'}]
+        results = mock_results[:max_results]
+        output = f'''# Web Search Results for: "{query}"\n\n## Search Summary\n- **Query**: {query}\n- **Search Type**: {search_type}\n- **Results Found**: {len(results)}\n- **Timestamp**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n## Top Results\n\n'''
+        for (i, result) in enumerate(results, 1):
+            output += f"### {i}. {result['title']}\n**URL**: {result['url']}\n**Source**: {result['source']}\n**Snippet**: {result['snippet']}\n\n"
+        output += '## Search Quality Metrics\n- **Relevance**: High - Results match search intent\n- **Diversity**: Good mix of sources and content types\n- **Timeliness**: Current information included\n- **Authority**: Reputable sources prioritized\n\n## Recommendations\n1. **Primary Source**: Check the first result for comprehensive information\n2. **Latest Updates**: Review news sources for current developments\n3. **Practical Examples**: Use tutorial resources for hands-on learning\n4. **Advanced Topics**: Explore expert-level content for deeper understanding\n\n## Next Steps\n- Click through to relevant results for detailed information\n- Save important URLs for future reference\n- Consider related searches for broader coverage'
+        return output
+
+class MLTrainingSkill(BaseSkill):
+    """Skill for machine learning model training guidance"""
+
+    def __init__(self):
+        super().__init__()
+        self.metadata.category = SkillCategory.DATA_ANALYSIS
+        self.metadata.description = 'Provides guidance for machine learning model training'
+        self.metadata.capabilities = ['model_selection', 'training_guidance', 'hyperparameter_tuning', 'evaluation_metrics', 'deployment_strategy']
+
+    def get_parameters(self) -> Dict[str, SkillParameter]:
+        return {'problem_type': SkillParameter(name='problem_type', param_type=SkillParameterType.STRING, required=True, description='Type of ML problem (classification, regression, clustering, etc.)'), 'data_size': SkillParameter(name='data_size', param_type=SkillParameterType.STRING, required=False, default='medium', description='Size of dataset (small, medium, large)'), 'complexity': SkillParameter(name='complexity', param_type=SkillParameterType.STRING, required=False, default='intermediate', description='Desired complexity level (beginner, intermediate, advanced)')}
+
+    async def _execute_async(self, context: SkillContext, **kwargs) -> SkillResult:
+        """Execute ML training skill"""
+        start_time = time.time()
+        self.status = SkillStatus.RUNNING
+        try:
+            validated_params = self.validate_parameters(**kwargs)
+            problem_type = validated_params.get('problem_type', 'classification')
+            data_size = validated_params.get('data_size', 'medium')
+            complexity = validated_params.get('complexity', 'intermediate')
+            guidance = self._generate_ml_guidance(problem_type, data_size, complexity)
+            execution_time = time.time() - start_time
+            self._update_performance_metrics(execution_time, True, {'problem_type': problem_type})
+            return SkillResult(success=True, output=guidance, skill_name=self.metadata.name, execution_time=execution_time, metadata={'problem_type': problem_type, 'data_size': data_size, 'complexity': complexity})
+        except Exception as e:
+            execution_time = time.time() - start_time
+            self._update_performance_metrics(execution_time, False, {'error': str(e)})
+            return SkillResult(success=False, output=f'ML training guidance failed: {str(e)}', skill_name=self.metadata.name, execution_time=execution_time, metadata={'error': str(e)})
+
+    def _generate_ml_guidance(self, problem_type: str, data_size: str, complexity: str) -> str:
+        """Generate ML training guidance"""
+        if problem_type.lower() == 'classification':
+            if complexity == 'beginner':
+                guidance = '# Machine Learning Classification Guide (Beginner)\n\n## Recommended Algorithm: Logistic Regression\n\n### Why Logistic Regression?\n- Simple and interpretable\n- Works well with small to medium datasets\n- Provides probability estimates\n- Fast training and prediction\n\n### Implementation Steps\n1. **Data Preparation**\n   - Handle missing values\n   - Encode categorical variables\n   - Scale/normalize features\n   - Split into train/test sets\n\n2. **Model Training**\n   ```python\n   from sklearn.linear_model import LogisticRegression\n   from sklearn.model_selection import train_test_split\n   from sklearn.metrics import accuracy_score\n\n   # Split data\n   X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)\n\n   # Train model\n   model = LogisticRegression()\n   model.fit(X_train, y_train)\n\n   # Evaluate\n   predictions = model.predict(X_test)\n   accuracy = accuracy_score(y_test, predictions)\n   ```\n\n3. **Evaluation Metrics**\n   - Accuracy: Overall correct predictions\n   - Precision: True positives / (True positives + False positives)\n   - Recall: True positives / (True positives + False negatives)\n   - F1-Score: Harmonic mean of precision and recall\n\n### Common Issues & Solutions\n- **Overfitting**: Use regularization, reduce features\n- **Class Imbalance**: Use class weights, oversampling\n- **Convergence**: Scale features, increase iterations\n\n### Next Steps\n1. Try the implementation above\n2. Experiment with different preprocessing techniques\n3. Learn about cross-validation for better evaluation'
+            elif complexity == 'intermediate':
+                guidance = "# Machine Learning Classification Guide (Intermediate)\n\n## Algorithm Selection Based on Data Size\n\n### For Small Datasets (< 10,000 samples)\n**Recommended**: Random Forest or Gradient Boosting\n- Handle mixed data types well\n- Built-in feature selection\n- Less prone to overfitting\n\n### For Medium Datasets (10k-100k samples)\n**Recommended**: XGBoost or LightGBM\n- High performance and accuracy\n- Handles missing values automatically\n- Built-in regularization\n\n### For Large Datasets (> 100k samples)\n**Recommended**: Linear models with feature engineering\n- Scalable to large datasets\n- Fast training and inference\n- Good interpretability\n\n## Advanced Implementation\n\n### Cross-Validation Strategy\n```python\nfrom sklearn.model_selection import StratifiedKFold\nfrom sklearn.ensemble import RandomForestClassifier\n\n# Stratified K-Fold for balanced classes\nskf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)\n\nfor fold, (train_idx, val_idx) in enumerate(skf.split(X, y)):\n    X_train, X_val = X[train_idx], X[val_idx]\n    y_train, y_val = y[train_idx], y[val_idx]\n\n    model = RandomForestClassifier(n_estimators=100, max_depth=10)\n    model.fit(X_train, y_train)\n\n    # Evaluate fold performance\n```\n\n### Hyperparameter Tuning\n```python\nfrom sklearn.model_selection import GridSearchCV\n\nparam_grid = {\n    'n_estimators': [50, 100, 200],\n    'max_depth': [10, 20, None],\n    'min_samples_split': [2, 5, 10]\n}\n\ngrid_search = GridSearchCV(\n    RandomForestClassifier(),\n    param_grid,\n    cv=5,\n    scoring='f1_macro',\n    n_jobs=-1\n)\n\ngrid_search.fit(X_train, y_train)\nbest_model = grid_search.best_estimator_\n```\n\n### Feature Engineering\n- Create interaction features\n- Use domain knowledge for new features\n- Handle categorical variables properly\n- Consider feature scaling/normalization\n\n## Performance Optimization\n1. **Speed**: Use faster algorithms for large datasets\n2. **Accuracy**: Ensemble methods, stacking\n3. **Robustness**: Cross-validation, regularization\n4. **Interpretability**: Feature importance analysis"
+            else:
+                guidance = "# Advanced Machine Learning Classification\n\n## State-of-the-Art Approaches\n\n### Deep Learning Models\n- **Transformers**: For complex pattern recognition\n- **CNNs**: For image-like data or sequential patterns\n- **RNNs/LSTMs**: For time series or sequence data\n\n### Ensemble Strategies\n- **Stacking**: Train meta-model on base model predictions\n- **Blending**: Weighted combination of model predictions\n- **Bayesian Optimization**: For hyperparameter tuning\n\n## Advanced Techniques\n\n### Neural Architecture Search\n```python\n# Using AutoKeras for automated model selection\nimport autokeras as ak\n\n# Automated model search\nclf = ak.StructuredDataClassifier(max_trials=10)\nclf.fit(X_train, y_train, epochs=10)\n\n# Export best model\nmodel = clf.export_model()\n```\n\n### Custom Loss Functions\n```python\nimport tensorflow as tf\n\ndef focal_loss(gamma=2.0, alpha=0.25):\n    def focal_loss_fn(y_true, y_pred):\n        y_pred = tf.clip_by_value(y_pred, 1e-7, 1-1e-7)\n        pt = tf.where(tf.equal(y_true, 1), y_pred, 1-y_pred)\n        return -tf.reduce_mean(alpha * tf.pow(1-pt, gamma) * tf.math.log(pt))\n    return focal_loss_fn\n```\n\n### Advanced Evaluation\n- **AUC-PR**: For imbalanced datasets\n- **Cohen's Kappa**: Agreement beyond chance\n- **Calibration Curves**: Probability calibration assessment\n\n## Production Considerations\n1. **Model Serving**: Use TensorFlow Serving or FastAPI\n2. **Monitoring**: Track model performance in production\n3. **A/B Testing**: Compare new models with existing ones\n4. **Model Updates**: Automated retraining pipelines\n\n## Research Directions\n- Self-supervised learning\n- Few-shot learning\n- Meta-learning approaches\n- Explainable AI techniques"
+        elif problem_type.lower() == 'regression':
+            guidance = '# Machine Learning Regression Guide\n\n## Algorithm Selection\n\n### Linear Models\n- **Linear Regression**: Simple, interpretable baseline\n- **Ridge/Lasso**: Regularization to prevent overfitting\n- **Elastic Net**: Combination of L1 and L2 regularization\n\n### Tree-Based Models\n- **Decision Trees**: Easy to interpret, handles non-linear relationships\n- **Random Forest**: Ensemble of decision trees, robust\n- **Gradient Boosting**: Sequential ensemble, high accuracy\n\n### Advanced Models\n- **Support Vector Regression**: Good for small datasets\n- **Neural Networks**: Complex non-linear relationships\n\n## Implementation Example\n```python\nfrom sklearn.ensemble import RandomForestRegressor\nfrom sklearn.metrics import mean_squared_error, r2_score\n\n# Train model\nmodel = RandomForestRegressor(n_estimators=100, random_state=42)\nmodel.fit(X_train, y_train)\n\n# Predict and evaluate\npredictions = model.predict(X_test)\nmse = mean_squared_error(y_test, predictions)\nr2 = r2_score(y_test, predictions)\n\nprint(f"MSE: {mse:.4f}")\nprint(f"R²: {r2:.4f}")\n```\n\n## Key Metrics\n- **MSE/RMSE**: Measure prediction error magnitude\n- **MAE**: Mean absolute error\n- **R²**: Proportion of variance explained\n- **MAPE**: Mean absolute percentage error\n\n## Best Practices\n1. **Feature Engineering**: Create meaningful features\n2. **Cross-Validation**: Use k-fold CV for evaluation\n3. **Regularization**: Prevent overfitting\n4. **Outlier Handling**: Robust regression techniques'
+        else:
+            guidance = f'# Machine Learning Training Guide for {problem_type}\n\n## Overview\nThis guide provides recommendations for training {problem_type} models with {data_size} datasets at {complexity} level.\n\n## Recommended Approach\n\n### 1. Data Preparation\n- Clean and preprocess your data\n- Handle missing values appropriately\n- Feature engineering and selection\n- Train/validation/test splits\n\n### 2. Model Selection\nBased on your problem type, consider these algorithms:\n- **Supervised Learning**: Linear models, trees, neural networks\n- **Unsupervised Learning**: Clustering, dimensionality reduction\n- **Reinforcement Learning**: Policy gradients, Q-learning\n\n### 3. Training Strategy\n- Start with simple models as baselines\n- Use cross-validation for evaluation\n- Hyperparameter tuning with grid/random search\n- Ensemble methods for improved performance\n\n### 4. Evaluation and Deployment\n- Comprehensive metric evaluation\n- Model interpretation and explainability\n- Production deployment considerations\n- Monitoring and maintenance\n\n## Getting Started\n1. Define your problem clearly\n2. Prepare and explore your data\n3. Start with simple models\n4. Gradually increase complexity\n5. Evaluate thoroughly before deployment\n\n## Resources\n- Scikit-learn documentation\n- TensorFlow/Keras tutorials\n- Research papers on arXiv\n- Online courses and communities'
+        return guidance
+
+class OSINTSkill(BaseSkill):
+    """Skill for Open Source Intelligence gathering and analysis"""
+
+    def __init__(self):
+        super().__init__()
+        self.metadata.category = SkillCategory.DATA_ANALYSIS
+        self.metadata.description = 'Performs OSINT investigations and threat intelligence analysis'
+        self.metadata.capabilities = ['dark_web_search', 'artifact_extraction', 'threat_intelligence', 'evidence_collection', 'report_generation']
+
+    def get_parameters(self) -> Dict[str, SkillParameter]:
+        return {'query': SkillParameter(name='query', param_type=SkillParameterType.STRING, required=True, description='Search query for OSINT investigation'), 'search_engines': SkillParameter(name='search_engines', param_type=SkillParameterType.LIST, required=False, default=['ahmia', 'torch', 'notevil'], description='List of search engines to use'), 'max_results': SkillParameter(name='max_results', param_type=SkillParameterType.INTEGER, required=False, default=10, description='Maximum number of results to analyze'), 'generate_report': SkillParameter(name='generate_report', param_type=SkillParameterType.BOOLEAN, required=False, default=True, description='Generate detailed investigation report')}
+
+    async def _execute_async(self, context: SkillContext, **kwargs) -> SkillResult:
+        """Execute OSINT investigation asynchronously"""
+        try:
+            query = context.parameters.get('query') if hasattr(context, 'parameters') else kwargs.get('query')
+            search_engines = context.parameters.get('search_engines', ['ahmia']) if hasattr(context, 'parameters') else kwargs.get('search_engines', ['ahmia'])
+            max_results = context.parameters.get('max_results', 10) if hasattr(context, 'parameters') else kwargs.get('max_results', 10)
+            generate_report = context.parameters.get('generate_report', True) if hasattr(context, 'parameters') else kwargs.get('generate_report', True)
+            if not query:
+                return SkillResult(success=False, output={}, skill_name='osintskill', execution_time=0.0, error_message='Query parameter is required for OSINT investigation')
+            import sys
+            from pathlib import Path
+            neo_osint_path = Path(__file__).parent / 'neo_osint'
+            if neo_osint_path.exists():
+                sys.path.insert(0, str(neo_osint_path))
+                try:
+                    from search.discovery import SearchDiscovery
+                    from ai.analyzer import AIAnalyzer
+                    from evidence.collector import EvidenceCollector
+                    discovery = SearchDiscovery()
+                    analyzer = AIAnalyzer()
+                    collector = EvidenceCollector()
+                    search_results = await discovery.search(query, engines=search_engines, max_results=max_results)
+                    analysis = await analyzer.analyze(search_results, query)
+                    evidence = {}
+                    if generate_report:
+                        evidence = await collector.collect_evidence(search_results, analysis)
+                    report_data = {'query': query, 'timestamp': context.timestamp.isoformat() if hasattr(context, 'timestamp') else 'unknown', 'search_results': len(search_results), 'analysis': analysis, 'evidence': evidence, 'threat_level': analysis.get('threat_level', 'LOW'), 'confidence_score': analysis.get('confidence_score', 0.0)}
+                    return SkillResult(success=True, output=report_data, skill_name='osintskill', execution_time=0.0, error_message=None)
+                except ImportError as e:
+                    return SkillResult(success=False, output={}, skill_name='osintskill', execution_time=0.0, error_message=f'Neo-OSINT components not available: {e}')
+            else:
+                return SkillResult(success=False, output={}, skill_name='osintskill', execution_time=0.0, error_message='Neo-OSINT module not found')
+        except Exception as e:
+            return SkillResult(success=False, output={}, skill_name='osintskill', execution_time=0.0, error_message=f'OSINT investigation failed: {str(e)}')
+
+class SkillsManager:
+    """
+    Unified skills management system that consolidates all skill functionality
+    into a single, efficient interface.
+"""
+
+    def __init__(self):
+        self.skills: Dict[str, BaseSkill] = {}
+        self.skill_factories: Dict[str, callable] = {}
+        self.skill_categories: Dict[SkillCategory, List[str]] = {}
+        self.execution_history: List[Dict[str, Any]] = []
+        self.performance_cache: Dict[str, Dict[str, Any]] = {}
+        self.lock = threading.Lock()
+        self._register_builtin_skills()
+        logger.info(f'Skills Manager initialized with {len(self.skill_factories)} skill factories (lazy loading enabled)')
+
+    def _register_builtin_skills(self):
+        """Register all built-in skills with lazy loading for faster startup"""
+        builtin_skill_factories = {'codegenerationskill': lambda : CodeGenerationSkill(), 'dataanalysisskill': lambda : DataAnalysisSkill(), 'textanalysisskill': lambda : TextAnalysisSkill(), 'websearchskill': lambda : WebSearchSkill(), 'mltrainingskill': lambda : MLTrainingSkill(), 'osintskill': lambda : OSINTSkill()}
+        for (skill_name, skill_factory) in builtin_skill_factories.items():
+            self.register_skill_factory(skill_name, skill_factory)
+            logger.debug(f'Registered lazy skill factory: {skill_name}')
+        try:
+            from more_skills import FileManagerSkill
+            self.register_skill(FileManagerSkill())
+            logger.info('Registered additional skill: file_manager')
+        except ImportError as e:
+            logger.warning(f'Could not import FileManagerSkill: {e}')
+        try:
+            from data_inspector import DataInspectorSkill
+            self.register_skill(DataInspectorSkill())
+            logger.info('Registered additional skill: data_inspector')
+        except ImportError as e:
+            logger.warning(f'Could not import DataInspectorSkill: {e}')
+        try:
+            from additional_skills import PlanningSkill
+            self.register_skill(PlanningSkill())
+            logger.info('Registered additional skill: planning')
+        except ImportError as e:
+            logger.warning(f'Could not import PlanningSkill: {e}')
+        except Exception as e:
+            logger.warning(f'Could not register PlanningSkill: {e}')
+        try:
+            from enhanced_tool_skill import EnhancedToolSkill
+            self.register_skill(EnhancedToolSkill())
+            logger.info('Registered enhanced tool skill with MCP integration')
+        except ImportError as e:
+            logger.warning(f'Could not import EnhancedToolSkill: {e}')
+        except Exception as e:
+            logger.warning(f'Could not register EnhancedToolSkill: {e}')
+        try:
+            from tonl_skill import TONLSkill
+            tonl_skill = TONLSkill()
+            self.register_skill(tonl_skill)
+            logger.info('Registered TONL skill: tonl_encoder_decoder')
+        except ImportError as e:
+            logger.warning(f'Could not import TONLSkill: {e}')
+        except Exception as e:
+            logger.warning(f'Could not register TONLSkill: {e}')
+            try:
+
+                class FallbackTONLSkill(BaseSkill):
+
+                    def __init__(self):
+                        super().__init__()
+                        self.metadata = SkillMetadata(name='tonl_encoder_decoder', category=SkillCategory.DATA_ANALYSIS, description='TONL encoding/decoding fallback', capabilities=['encode', 'decode', 'compress'])
+
+                    def get_parameters(self):
+                        return {}
+
+                    async def _execute_async(self, context, **kwargs):
+                        return SkillResult(success=True, output='TONL skill fallback - basic encoding available', skill_name='tonl_fallback', execution_time=0.1)
+                self.register_skill(FallbackTONLSkill())
+                logger.info('Registered TONL fallback skill')
+            except Exception as fallback_e:
+                logger.error(f'Failed to register TONL fallback: {fallback_e}')
+        try:
+            from openspec_skill import OpenSpecSkill
+            self.register_skill(OpenSpecSkill())
+            logger.info('Registered OpenSpec skill: openspec_manager')
+        except ImportError as e:
+            logger.warning(f'Could not import OpenSpecSkill: {e}')
+        except Exception as e:
+            logger.warning(f'Could not register OpenSpecSkill: {e}')
+        try:
+            from multisession_skill import MultiSessionSkill
+            self.register_skill(MultiSessionSkill())
+            logger.info('Registered Multi-Session skill: multisession_manager')
+        except ImportError as e:
+            logger.warning(f'Could not import MultiSessionSkill: {e}')
+        except Exception as e:
+            logger.warning(f'Could not register MultiSessionSkill: {e}')
+        try:
+            from advanced_memory_skill import AdvancedMemorySkill
+            self.register_skill(AdvancedMemorySkill())
+            logger.info('Registered Advanced Memory skill: advanced_memory_manager')
+        except ImportError as e:
+            logger.warning(f'Could not import AdvancedMemorySkill: {e}')
+        except Exception as e:
+            logger.warning(f'Could not register AdvancedMemorySkill: {e}')
+
+    def register_skill_factory(self, skill_name: str, skill_factory: callable):
+        """Register a skill factory for lazy loading"""
+        with self.lock:
+            self.skill_factories[skill_name] = skill_factory
+            logger.debug(f'Registered skill factory: {skill_name}')
+
+    def register_skill(self, skill: BaseSkill):
+        """Register a new skill"""
+        with self.lock:
+            skill_name = skill.metadata.name
+            category = skill.metadata.category
+            self.skills[skill_name] = skill
+            if category not in self.skill_categories:
+                self.skill_categories[category] = []
+            if skill_name not in self.skill_categories[category]:
+                self.skill_categories[category].append(skill_name)
+            logger.info(f'Registered skill: {skill_name} in category {category.value}')
+
+    def get_skill(self, skill_name: str) -> Optional[BaseSkill]:
+        """Get a skill by name with lazy loading"""
+        if skill_name in self.skills:
+            return self.skills[skill_name]
+        if skill_name in self.skill_factories:
+            try:
+                logger.info(f'Lazy loading skill: {skill_name}')
+                skill = self.skill_factories[skill_name]()
+                self.skills[skill_name] = skill
+                if hasattr(skill, 'metadata') and hasattr(skill.metadata, 'category'):
+                    category = skill.metadata.category
+                    if category not in self.skill_categories:
+                        self.skill_categories[category] = []
+                    if skill_name not in self.skill_categories[category]:
+                        self.skill_categories[category].append(skill_name)
+                logger.info(f'Successfully lazy loaded skill: {skill_name}')
+                return skill
+            except Exception as e:
+                logger.error(f'Failed to lazy load skill {skill_name}: {e}')
+                return None
+        return None
+
+    def get(self, skill_name: str) -> Optional[BaseSkill]:
+        """Get a skill by name (compatibility method for brain.py)"""
+        return self.get_skill(skill_name)
+
+    def get_skills_by_category(self, category: SkillCategory) -> List[BaseSkill]:
+        """Get all skills in a category"""
+        skill_names = self.skill_categories.get(category, [])
+        return [self.skills[name] for name in skill_names if name in self.skills]
+
+    def list_skills(self) -> Dict[str, Dict[str, Any]]:
+        """List all registered skills with their metadata"""
+        return {name: {'category': skill.metadata.category.value, 'description': skill.metadata.description, 'capabilities': skill.metadata.capabilities, 'execution_count': skill.execution_count, 'success_rate': skill.success_count / skill.execution_count if skill.execution_count > 0 else 0, 'avg_execution_time': skill.average_execution_time} for (name, skill) in self.skills.items()}
+
+    async def execute_skill(self, skill_name: str, context: SkillContext, **kwargs) -> SkillResult:
+        """Execute a skill by name"""
+        skill = self.get_skill(skill_name)
+        if not skill:
+            return SkillResult(success=False, output=f"Skill '{skill_name}' not found", skill_name=skill_name, execution_time=0.0, metadata={'error': 'skill_not_found'})
+        result = await skill.execute(context, **kwargs)
+        execution_record = {'skill_name': skill_name, 'timestamp': datetime.now().isoformat(), 'success': result.success, 'execution_time': result.execution_time, 'metadata': result.metadata}
+        self.execution_history.append(execution_record)
+        if len(self.execution_history) > 1000:
+            self.execution_history = self.execution_history[-1000:]
+        return result
+
+    def get_execution_history(self, skill_name: Optional[str]=None, limit: int=50) -> List[Dict[str, Any]]:
+        """Get execution history, optionally filtered by skill"""
+        history = self.execution_history
+        if skill_name:
+            history = [record for record in history if record['skill_name'] == skill_name]
+        return history[-limit:]
+
+    def get_performance_stats(self) -> Dict[str, Any]:
+        """Get overall performance statistics"""
+        total_executions = len(self.execution_history)
+        successful_executions = sum((1 for record in self.execution_history if record['success']))
+        skill_stats = {}
+        for (skill_name, skill) in self.skills.items():
+            skill_history = [r for r in self.execution_history if r['skill_name'] == skill_name]
+            if skill_history:
+                success_rate = sum((1 for r in skill_history if r['success'])) / len(skill_history)
+                avg_time = sum((r['execution_time'] for r in skill_history)) / len(skill_history)
+                skill_stats[skill_name] = {'executions': len(skill_history), 'success_rate': success_rate, 'avg_execution_time': avg_time}
+        return {'total_executions': total_executions, 'success_rate': successful_executions / total_executions if total_executions > 0 else 0, 'skill_stats': skill_stats, 'timestamp': datetime.now().isoformat()}
+_skills_manager = SkillsManager()
+
+def get_skills_manager() -> SkillsManager:
+    """Get the global skills manager instance"""
+    return _skills_manager

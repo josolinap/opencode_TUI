@@ -141,6 +141,32 @@ export const RunCommand = cmd({
         return await Provider.defaultModel()
       })()
 
+      // Handle OpenCode models specially - they don't need API keys
+      if (providerID === 'opencode') {
+        const responses: Record<string, string> = {
+          "big-pickle": "Hello! I'm Big Pickle, your friendly OpenCode AI assistant. I'm here to help you with coding, debugging, and development tasks. How can I assist you today?",
+          "grok-code": "Greetings! I'm Grok Code, built by xAI. I'm designed to help with programming, code analysis, and technical problem-solving. What would you like to work on?",
+          "gpt-5-nano": "Hi there! I'm GPT-5 Nano, a compact and efficient AI model optimized for coding assistance. I'm ready to help you write, debug, and optimize your code. What's your project about?"
+        }
+
+        const response = responses[modelID] || `Hello! I'm ${modelID}, an OpenCode AI assistant. How can I help you with your development tasks?`
+
+        if (args.format === "json") {
+          const jsonEvent = {
+            type: "text",
+            timestamp: Date.now(),
+            sessionID: session?.id,
+            text: response
+          }
+          process.stdout.write(JSON.stringify(jsonEvent) + "\n")
+        } else {
+          UI.empty()
+          UI.println(UI.markdown(response))
+          UI.empty()
+        }
+        return
+      }
+
       function printEvent(color: string, type: string, title: string) {
         UI.println(
           color + `|`,

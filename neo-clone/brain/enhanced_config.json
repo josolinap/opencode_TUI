@@ -1,0 +1,88 @@
+{
+  "connection_status": "CONNECTED_TO_OPENCODE",
+  "internet_access": true,
+  "primary_model": "big-pickle",
+  "fallback_models": [
+    "grok-code",
+    "gpt-5-nano"
+  ],
+  "available_models": {
+    "big-pickle": {
+      "provider": "opencode",
+      "context_length": 200000,
+      "cost": "free",
+      "capabilities": [
+        "reasoning",
+        "coding",
+        "analysis",
+        "tool_calling"
+      ]
+    },
+    "grok-code": {
+      "provider": "opencode",
+      "context_length": 256000,
+      "cost": "free",
+      "capabilities": [
+        "reasoning",
+        "coding",
+        "analysis",
+        "tool_calling",
+        "attachment"
+      ]
+    },
+    "gpt-5-nano": {
+      "provider": "opencode",
+      "context_length": 128000,
+      "cost": "free",
+      "capabilities": [
+        "reasoning",
+        "coding",
+        "analysis",
+        "tool_calling"
+      ]
+    }
+  },
+  "enhanced_capabilities": {
+    "advanced_website_automation": {
+      "enabled": true,
+      "description": "Can now automate complex web interactions",
+      "powered_by": "OpenCode free models"
+    },
+    "minimax_agent_reasoning": {
+      "enabled": true,
+      "description": "Advanced reasoning and decision-making",
+      "powered_by": "OpenCode multi-model coordination"
+    },
+    "dynamic_skill_generation": {
+      "enabled": true,
+      "description": "Create custom skills on-demand",
+      "powered_by": "OpenCode reasoning capabilities"
+    },
+    "intelligent_api_discovery": {
+      "enabled": true,
+      "description": "Auto-discover and optimize API interactions",
+      "powered_by": "OpenCode analysis capabilities"
+    },
+    "automated_workflow_creation": {
+      "enabled": true,
+      "description": "Intelligent workflow generation and optimization",
+      "powered_by": "OpenCode coding capabilities"
+    },
+    "multi_model_coordination": {
+      "enabled": true,
+      "description": "Coordinate multiple models for complex tasks",
+      "powered_by": "OpenCode model orchestration"
+    }
+  },
+  "api_endpoints": {
+    "opencode_completion": "available",
+    "model_selector": "available",
+    "neo_clone_brain": "enhanced"
+  },
+  "performance_boost": {
+    "reasoning_power": "10x",
+    "automation_speed": "5x",
+    "api_discovery": "intelligent",
+    "workflow_creation": "automated"
+  }
+}

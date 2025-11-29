@@ -1,0 +1,726 @@
+"""
+Neo-Clone Microservices Architecture
+==================================
+
+This module defines the microservices architecture for Neo-Clone,
+transforming it from a monolithic system to a scalable, distributed
+architecture with clear service boundaries and responsibilities.
+
+Author: Neo-Clone Enhanced
+Version: 2.0.0 (Microservices Architecture)
+"""
+
+import asyncio
+import json
+import logging
+import uuid
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field, asdict
+from typing import Dict, List, Any, Optional, Union, Callable
+from datetime import datetime, timedelta
+from enum import Enum
+import socket
+from pathlib import Path
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+class ServiceType(Enum):
+    """Types of services in the microservices architecture"""
+    API_GATEWAY = "api_gateway"
+    AUTH_SERVICE = "auth_service"
+    SKILL_SERVICE = "skill_service"
+    MCP_SERVICE = "mcp_service"
+    MEMORY_SERVICE = "memory_service"
+    VALIDATION_SERVICE = "validation_service"
+    MONITORING_SERVICE = "monitoring_service"
+    CACHE_SERVICE = "cache_service"
+    MESSAGE_QUEUE = "message_queue"
+    DISCOVERY_SERVICE = "discovery_service"
+
+
+class ServiceStatus(Enum):
+    """Service status enumeration"""
+    STARTING = "starting"
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    UNHEALTHY = "unhealthy"
+    STOPPING = "stopping"
+    STOPPED = "stopped"
+
+
+class CommunicationType(Enum):
+    """Communication patterns between services"""
+    SYNC_HTTP = "sync_http"
+    ASYNC_MESSAGE = "async_message"
+    EVENT_STREAM = "event_stream"
+    GRPC = "grpc"
+    WEBSOCKET = "websocket"
+
+
+@dataclass
+class ServiceEndpoint:
+    """Service endpoint configuration"""
+    host: str = "localhost"
+    port: int = 8000
+    protocol: str = "http"
+    path: str = "/"
+    health_check_path: str = "/health"
+    
+    @property
+    def url(self) -> str:
+        """Get full URL"""
+        return f"{self.protocol}://{self.host}:{self.port}{self.path}"
+    
+    @property
+    def health_url(self) -> str:
+        """Get health check URL"""
+        return f"{self.protocol}://{self.host}:{self.port}{self.health_check_path}"
+
+
+@dataclass
+class ServiceDependency:
+    """Service dependency definition"""
+    service_name: str
+    service_type: ServiceType
+    required: bool = True
+    communication_type: CommunicationType = CommunicationType.SYNC_HTTP
+    endpoint: Optional[ServiceEndpoint] = None
+    timeout: float = 30.0
+    retry_attempts: int = 3
+
+
+@dataclass
+class ServiceConfig:
+    """Configuration for a microservice"""
+    name: str
+    service_type: ServiceType
+    version: str = "1.0.0"
+    endpoint: ServiceEndpoint = field(default_factory=ServiceEndpoint)
+    dependencies: List[ServiceDependency] = field(default_factory=list)
+    max_instances: int = 1
+    min_instances: int = 1
+    auto_scaling: bool = False
+    health_check_interval: float = 30.0
+    graceful_shutdown_timeout: float = 30.0
+    
+    # Resource limits
+    max_memory_mb: int = 512
+    max_cpu_percent: float = 80.0
+    max_connections: int = 100
+    
+    # Performance settings
+    request_timeout: float = 30.0
+    connection_pool_size: int = 10
+    enable_caching: bool = True
+    enable_metrics: bool = True
+
+
+class MicroService(ABC):
+    """Abstract base class for all microservices"""
+    
+    def __init__(self, config: ServiceConfig):
+        self.config = config
+        self.service_id = f"{config.name}_{uuid.uuid4().hex[:8]}"
+        self.status = ServiceStatus.STARTING
+        self.start_time = datetime.now()
+        self.health_check_failures = 0
+        self.metrics = {
+            "requests_handled": 0,
+            "errors": 0,
+            "avg_response_time": 0.0,
+            "memory_usage": 0.0,
+            "cpu_usage": 0.0
+        }
+        
+        # Service registry
+        self._registered_services: Dict[str, ServiceEndpoint] = {}
+        self._health_check_task: Optional[asyncio.Task] = None
+        
+        logger.info(f"Initializing microservice: {self.service_id}")
+    
+    @abstractmethod
+    async def start(self) -> bool:
+        """Start the service"""
+        pass
+    
+    @abstractmethod
+    async def stop(self) -> bool:
+        """Stop the service"""
+        pass
+    
+    @abstractmethod
+    async def handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle incoming requests"""
+        pass
+    
+    async def health_check(self) -> Dict[str, Any]:
+        """Perform health check"""
+        try:
+            # Check dependencies
+            dependency_status = await self._check_dependencies()
+            
+            # Check system resources
+            resource_status = await self._check_resources()
+            
+            # Determine overall health
+            all_healthy = all(dep["healthy"] for dep in dependency_status.values())
+            resources_ok = resource_status["memory_ok"] and resource_status["cpu_ok"]
+            
+            if all_healthy and resources_ok:
+                self.status = ServiceStatus.HEALTHY
+                self.health_check_failures = 0
+            elif resources_ok:
+                self.status = ServiceStatus.DEGRADED
+            else:
+                self.status = ServiceStatus.UNHEALTHY
+                self.health_check_failures += 1
+            
+            return {
+                "service_id": self.service_id,
+                "status": self.status.value,
+                "uptime_seconds": (datetime.now() - self.start_time).total_seconds(),
+                "dependencies": dependency_status,
+                "resources": resource_status,
+                "metrics": self.metrics,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Health check failed for {self.service_id}: {e}")
+            self.status = ServiceStatus.UNHEALTHY
+            self.health_check_failures += 1
+            return {
+                "service_id": self.service_id,
+                "status": ServiceStatus.UNHEALTHY.value,
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+    
+    async def _check_dependencies(self) -> Dict[str, Dict[str, Any]]:
+        """Check health of dependencies"""
+        dependency_status = {}
+        
+        for dep in self.config.dependencies:
+            try:
+                if dep.endpoint:
+                    # Simple HTTP health check
+                    import aiohttp
+                    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=dep.timeout)) as session:
+                        async with session.get(dep.endpoint.health_url) as response:
+                            healthy = response.status == 200
+                            dependency_status[dep.service_name] = {
+                                "healthy": healthy,
+                                "status_code": response.status,
+                                "response_time": 0.0  # Would measure in real implementation
+                            }
+                else:
+                    # Service discovery lookup
+                    endpoint = await self._discover_service(dep.service_name)
+                    if endpoint:
+                        dependency_status[dep.service_name] = {
+                            "healthy": True,
+                            "endpoint": endpoint.url,
+                            "discovered": True
+                        }
+                    else:
+                        dependency_status[dep.service_name] = {
+                            "healthy": False,
+                            "error": "Service not found in registry"
+                        }
+                        
+            except Exception as e:
+                dependency_status[dep.service_name] = {
+                    "healthy": False,
+                    "error": str(e)
+                }
+                
+                if dep.required:
+                    logger.error(f"Required dependency {dep.service_name} is unhealthy: {e}")
+        
+        return dependency_status
+    
+    async def _check_resources(self) -> Dict[str, Any]:
+        """Check system resource usage"""
+        try:
+            import psutil
+            
+            # Memory usage
+            memory = psutil.virtual_memory()
+            memory_usage_mb = memory.used / (1024 * 1024)
+            memory_ok = memory_usage_mb < self.config.max_memory_mb
+            
+            # CPU usage
+            cpu_percent = psutil.cpu_percent(interval=1)
+            cpu_ok = cpu_percent < self.config.max_cpu_percent
+            
+            # Update metrics
+            self.metrics["memory_usage"] = memory_usage_mb
+            self.metrics["cpu_usage"] = cpu_percent
+            
+            return {
+                "memory_usage_mb": memory_usage_mb,
+                "memory_limit_mb": self.config.max_memory_mb,
+                "memory_ok": memory_ok,
+                "cpu_usage_percent": cpu_percent,
+                "cpu_limit_percent": self.config.max_cpu_percent,
+                "cpu_ok": cpu_ok
+            }
+            
+        except ImportError:
+            logger.warning("psutil not available for resource monitoring")
+            return {
+                "memory_ok": True,
+                "cpu_ok": True,
+                "error": "Resource monitoring not available"
+            }
+        except Exception as e:
+            logger.error(f"Resource check failed: {e}")
+            return {
+                "memory_ok": False,
+                "cpu_ok": False,
+                "error": str(e)
+            }
+    
+    async def _discover_service(self, service_name: str) -> Optional[ServiceEndpoint]:
+        """Discover service endpoint from registry"""
+        # This would integrate with a service discovery system like Consul or etcd
+        # For now, return a simple lookup
+        return self._registered_services.get(service_name)
+    
+    async def register_service(self, service_name: str, endpoint: ServiceEndpoint):
+        """Register a service in the local registry"""
+        self._registered_services[service_name] = endpoint
+        logger.info(f"Registered service: {service_name} -> {endpoint.url}")
+    
+    async def unregister_service(self, service_name: str):
+        """Unregister a service"""
+        if service_name in self._registered_services:
+            del self._registered_services[service_name]
+            logger.info(f"Unregistered service: {service_name}")
+    
+    def get_service_info(self) -> Dict[str, Any]:
+        """Get service information"""
+        return {
+            "service_id": self.service_id,
+            "name": self.config.name,
+            "type": self.config.service_type.value,
+            "version": self.config.version,
+            "status": self.status.value,
+            "endpoint": self.config.endpoint.url,
+            "uptime_seconds": (datetime.now() - self.start_time).total_seconds(),
+            "dependencies": [dep.service_name for dep in self.config.dependencies],
+            "metrics": self.metrics,
+            "config": asdict(self.config)
+        }
+
+
+class ServiceRegistry:
+    """Central service registry for service discovery"""
+    
+    def __init__(self):
+        self.services: Dict[str, Dict[str, Any]] = {}
+        self.heartbeat_intervals: Dict[str, float] = {}
+        self.last_heartbeat: Dict[str, datetime] = {}
+        
+    async def register(self, service_info: Dict[str, Any]) -> bool:
+        """Register a service"""
+        service_id = service_info["service_id"]
+        self.services[service_id] = service_info
+        self.last_heartbeat[service_id] = datetime.now()
+        self.heartbeat_intervals[service_id] = service_info.get("heartbeat_interval", 30.0)
+        
+        logger.info(f"Registered service: {service_id}")
+        return True
+    
+    async def unregister(self, service_id: str) -> bool:
+        """Unregister a service"""
+        if service_id in self.services:
+            del self.services[service_id]
+            del self.last_heartbeat[service_id]
+            del self.heartbeat_intervals[service_id]
+            logger.info(f"Unregistered service: {service_id}")
+            return True
+        return False
+    
+    async def heartbeat(self, service_id: str) -> bool:
+        """Update service heartbeat"""
+        if service_id in self.services:
+            self.last_heartbeat[service_id] = datetime.now()
+            return True
+        return False
+    
+    async def discover(self, service_type: Optional[str] = None, 
+                     service_name: Optional[str] = None,
+                     healthy_only: bool = True) -> List[Dict[str, Any]]:
+        """Discover services"""
+        services = []
+        
+        for service_id, service_info in self.services.items():
+            # Filter by type/name if specified
+            if service_type and service_info.get("type") != service_type:
+                continue
+            if service_name and service_info.get("name") != service_name:
+                continue
+            
+            # Check if service is healthy
+            if healthy_only:
+                last_hb = self.last_heartbeat.get(service_id)
+                if not last_hb:
+                    continue
+                
+                interval = self.heartbeat_intervals.get(service_id, 30.0)
+                if (datetime.now() - last_hb).total_seconds() > interval * 2:
+                    continue
+            
+            services.append(service_info)
+        
+        return services
+    
+    async def cleanup_stale_services(self):
+        """Remove stale services that haven't sent heartbeats"""
+        now = datetime.now()
+        stale_services = []
+        
+        for service_id, last_hb in self.last_heartbeat.items():
+            interval = self.heartbeat_intervals.get(service_id, 30.0)
+            if (now - last_hb).total_seconds() > interval * 3:
+                stale_services.append(service_id)
+        
+        for service_id in stale_services:
+            await self.unregister(service_id)
+            logger.warning(f"Removed stale service: {service_id}")
+
+
+# Service Definitions
+class SkillServiceConfig:
+    """Configuration for Skill Service"""
+    
+    @staticmethod
+    def get_config() -> ServiceConfig:
+        return ServiceConfig(
+            name="skill_service",
+            service_type=ServiceType.SKILL_SERVICE,
+            endpoint=ServiceEndpoint(port=8001),
+            dependencies=[
+                ServiceDependency(
+                    service_name="memory_service",
+                    service_type=ServiceType.MEMORY_SERVICE,
+                    communication_type=CommunicationType.ASYNC_MESSAGE
+                ),
+                ServiceDependency(
+                    service_name="cache_service",
+                    service_type=ServiceType.CACHE_SERVICE,
+                    communication_type=CommunicationType.SYNC_HTTP
+                )
+            ],
+            max_instances=3,
+            auto_scaling=True,
+            max_memory_mb=1024,
+            max_connections=200
+        )
+
+
+class MCPServiceConfig:
+    """Configuration for MCP Service"""
+    
+    @staticmethod
+    def get_config() -> ServiceConfig:
+        return ServiceConfig(
+            name="mcp_service",
+            service_type=ServiceType.MCP_SERVICE,
+            endpoint=ServiceEndpoint(port=8002),
+            dependencies=[
+                ServiceDependency(
+                    service_name="skill_service",
+                    service_type=ServiceType.SKILL_SERVICE,
+                    communication_type=CommunicationType.SYNC_HTTP
+                )
+            ],
+            max_instances=2,
+            max_memory_mb=768,
+            max_connections=150
+        )
+
+
+class MemoryServiceConfig:
+    """Configuration for Memory Service"""
+    
+    @staticmethod
+    def get_config() -> ServiceConfig:
+        return ServiceConfig(
+            name="memory_service",
+            service_type=ServiceType.MEMORY_SERVICE,
+            endpoint=ServiceEndpoint(port=8003),
+            dependencies=[
+                ServiceDependency(
+                    service_name="cache_service",
+                    service_type=ServiceType.CACHE_SERVICE,
+                    communication_type=CommunicationType.SYNC_HTTP
+                )
+            ],
+            max_instances=2,
+            max_memory_mb=1536,  # More memory for data storage
+            max_connections=100
+        )
+
+
+class ValidationServiceConfig:
+    """Configuration for Validation Service"""
+    
+    @staticmethod
+    def get_config() -> ServiceConfig:
+        return ServiceConfig(
+            name="validation_service",
+            service_type=ServiceType.VALIDATION_SERVICE,
+            endpoint=ServiceEndpoint(port=8004),
+            dependencies=[
+                ServiceDependency(
+                    service_name="skill_service",
+                    service_type=ServiceType.SKILL_SERVICE,
+                    required=False
+                ),
+                ServiceDependency(
+                    service_name="mcp_service",
+                    service_type=ServiceType.MCP_SERVICE,
+                    required=False
+                )
+            ],
+            max_instances=1,
+            max_memory_mb=512,
+            max_connections=50
+        )
+
+
+class MonitoringServiceConfig:
+    """Configuration for Monitoring Service"""
+    
+    @staticmethod
+    def get_config() -> ServiceConfig:
+        return ServiceConfig(
+            name="monitoring_service",
+            service_type=ServiceType.MONITORING_SERVICE,
+            endpoint=ServiceEndpoint(port=8005),
+            dependencies=[],  # Monitoring should be independent
+            max_instances=1,
+            max_memory_mb=512,
+            max_connections=100
+        )
+
+
+# Architecture Overview
+class MicroservicesArchitecture:
+    """Main architecture orchestrator"""
+    
+    def __init__(self):
+        self.service_registry = ServiceRegistry()
+        self.service_configs = {
+            ServiceType.SKILL_SERVICE: SkillServiceConfig.get_config(),
+            ServiceType.MCP_SERVICE: MCPServiceConfig.get_config(),
+            ServiceType.MEMORY_SERVICE: MemoryServiceConfig.get_config(),
+            ServiceType.VALIDATION_SERVICE: ValidationServiceConfig.get_config(),
+            ServiceType.MONITORING_SERVICE: MonitoringServiceConfig.get_config()
+        }
+        
+    def get_service_config(self, service_type: ServiceType) -> ServiceConfig:
+        """Get configuration for a service type"""
+        return self.service_configs.get(service_type)
+    
+    def get_all_service_configs(self) -> Dict[ServiceType, ServiceConfig]:
+        """Get all service configurations"""
+        return self.service_configs
+    
+    def get_service_dependencies(self, service_type: ServiceType) -> List[ServiceType]:
+        """Get dependency chain for a service"""
+        config = self.service_configs.get(service_type)
+        if not config:
+            return []
+        
+        dependencies = []
+        for dep in config.dependencies:
+            dependencies.append(dep.service_type)
+        
+        return dependencies
+    
+    def get_dependency_graph(self) -> Dict[str, List[str]]:
+        """Get complete dependency graph"""
+        graph = {}
+        
+        for service_type, config in self.service_configs.items():
+            service_name = config.name
+            dependencies = [dep.service_name for dep in config.dependencies]
+            graph[service_name] = dependencies
+        
+        return graph
+    
+    def validate_architecture(self) -> Dict[str, Any]:
+        """Validate the microservices architecture"""
+        issues = []
+        warnings = []
+        
+        # Check for circular dependencies
+        graph = self.get_dependency_graph()
+        visited = set()
+        rec_stack = set()
+        
+        def has_cycle(node):
+            visited.add(node)
+            rec_stack.add(node)
+            
+            for neighbor in graph.get(node, []):
+                if neighbor not in visited:
+                    if has_cycle(neighbor):
+                        return True
+                elif neighbor in rec_stack:
+                    return True
+            
+            rec_stack.remove(node)
+            return False
+        
+        for service_name in graph:
+            if service_name not in visited:
+                if has_cycle(service_name):
+                    issues.append(f"Circular dependency detected involving {service_name}")
+        
+        # Check for missing configurations
+        required_services = set(ServiceType)
+        configured_services = set(self.service_configs.keys())
+        missing = required_services - configured_services
+        
+        if missing:
+            warnings.append(f"Missing configurations for: {missing}")
+        
+        # Check resource allocation
+        total_memory = sum(config.max_memory_mb for config in self.service_configs.values())
+        if total_memory > 4096:  # 4GB warning threshold
+            warnings.append(f"High memory allocation: {total_memory}MB total")
+        
+        return {
+            "valid": len(issues) == 0,
+            "issues": issues,
+            "warnings": warnings,
+            "services_configured": len(configured_services),
+            "total_memory_mb": total_memory,
+            "dependency_graph": graph
+        }
+
+
+# Factory for creating services
+class ServiceFactory:
+    """Factory for creating microservice instances"""
+    
+    @staticmethod
+    def create_service(service_type: ServiceType, config: ServiceConfig) -> MicroService:
+        """Create a service instance based on type"""
+        # This would return actual service implementations
+        # For now, return a base implementation
+        return BaseService(config)
+
+
+class BaseService(MicroService):
+    """Base implementation of a microservice"""
+    
+    async def start(self) -> bool:
+        """Start the service"""
+        try:
+            logger.info(f"Starting service {self.service_id}")
+            
+            # Start health check task
+            self._health_check_task = asyncio.create_task(self._health_check_loop())
+            
+            self.status = ServiceStatus.HEALTHY
+            logger.info(f"Service {self.service_id} started successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to start service {self.service_id}: {e}")
+            self.status = ServiceStatus.UNHEALTHY
+            return False
+    
+    async def stop(self) -> bool:
+        """Stop the service"""
+        try:
+            logger.info(f"Stopping service {self.service_id}")
+            self.status = ServiceStatus.STOPPING
+            
+            # Cancel health check task
+            if self._health_check_task:
+                self._health_check_task.cancel()
+                try:
+                    await self._health_check_task
+                except asyncio.CancelledError:
+                    pass
+            
+            self.status = ServiceStatus.STOPPED
+            logger.info(f"Service {self.service_id} stopped successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to stop service {self.service_id}: {e}")
+            return False
+    
+    async def handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle incoming requests"""
+        self.metrics["requests_handled"] += 1
+        
+        try:
+            # Basic request handling
+            response = {
+                "service_id": self.service_id,
+                "status": "success",
+                "data": f"Request processed by {self.config.name}",
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            return response
+            
+        except Exception as e:
+            self.metrics["errors"] += 1
+            logger.error(f"Request handling failed: {e}")
+            return {
+                "service_id": self.service_id,
+                "status": "error",
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+    
+    async def _health_check_loop(self):
+        """Continuous health check loop"""
+        while self.status in [ServiceStatus.HEALTHY, ServiceStatus.DEGRADED]:
+            try:
+                await asyncio.sleep(self.config.health_check_interval)
+                await self.health_check()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Health check loop error: {e}")
+
+
+if __name__ == "__main__":
+    # Demo the microservices architecture
+    architecture = MicroservicesArchitecture()
+    
+    # Validate architecture
+    validation = architecture.validate_architecture()
+    print("Architecture Validation:")
+    print(f"Valid: {validation['valid']}")
+    print(f"Issues: {validation['issues']}")
+    print(f"Warnings: {validation['warnings']}")
+    print(f"Services Configured: {validation['services_configured']}")
+    print(f"Total Memory: {validation['total_memory_mb']}MB")
+    
+    print("\nDependency Graph:")
+    for service, deps in validation['dependency_graph'].items():
+        print(f"  {service} -> {deps}")
+    
+    # Create a sample service
+    skill_config = SkillServiceConfig.get_config()
+    skill_service = ServiceFactory.create_service(ServiceType.SKILL_SERVICE, skill_config)
+    
+    print(f"\nSample Service Created:")
+    print(f"ID: {skill_service.service_id}")
+    print(f"Name: {skill_service.config.name}")
+    print(f"Type: {skill_service.config.service_type.value}")
+    print(f"Endpoint: {skill_service.config.endpoint.url}")

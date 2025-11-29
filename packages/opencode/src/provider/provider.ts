@@ -214,40 +214,68 @@ export namespace Provider {
 
       for (const [modelID, model] of Object.entries(provider.models ?? {})) {
         const existing = parsed.models[modelID]
-        const parsedModel: ModelsDev.Model = {
-          id: model.id ?? modelID,
-          name: model.name ?? existing?.name ?? modelID,
-          release_date: model.release_date ?? existing?.release_date,
-          attachment: model.attachment ?? existing?.attachment ?? false,
-          reasoning: model.reasoning ?? existing?.reasoning ?? false,
-          temperature: model.temperature ?? existing?.temperature ?? false,
-          tool_call: model.tool_call ?? existing?.tool_call ?? true,
-          cost:
-            !model.cost && !existing?.cost
-              ? {
-                  input: 0,
-                  output: 0,
-                  cache_read: 0,
-                  cache_write: 0,
-                }
-              : {
-                  cache_read: 0,
-                  cache_write: 0,
-                  ...existing?.cost,
-                  ...model.cost,
-                },
-          options: {
-            ...existing?.options,
-            ...model.options,
-          },
-          limit: model.limit ??
-            existing?.limit ?? {
-              context: 0,
+
+        // Handle case where model is a string (backward compatibility)
+        if (typeof model === 'string') {
+          const parsedModel: ModelsDev.Model = {
+            id: modelID,
+            name: existing?.name ?? modelID,
+            release_date: existing?.release_date ?? "2024-01-01",
+            attachment: existing?.attachment ?? false,
+            reasoning: existing?.reasoning ?? false,
+            temperature: existing?.temperature ?? true,
+            tool_call: existing?.tool_call ?? true,
+            cost: existing?.cost ?? {
+              input: 0,
               output: 0,
+              cache_read: 0,
+              cache_write: 0,
             },
-          provider: model.provider ?? existing?.provider,
+            options: existing?.options ?? {},
+            limit: existing?.limit ?? {
+              context: 128000,
+              output: 4096,
+            },
+            provider: existing?.provider,
+          }
+          parsed.models[modelID] = parsedModel
+        } else {
+          // Model is an object
+          const parsedModel: ModelsDev.Model = {
+            id: model.id ?? modelID,
+            name: model.name ?? existing?.name ?? modelID,
+            release_date: model.release_date ?? existing?.release_date,
+            attachment: model.attachment ?? existing?.attachment ?? false,
+            reasoning: model.reasoning ?? existing?.reasoning ?? false,
+            temperature: model.temperature ?? existing?.temperature ?? false,
+            tool_call: model.tool_call ?? existing?.tool_call ?? true,
+            cost:
+              !model.cost && !existing?.cost
+                ? {
+                    input: 0,
+                    output: 0,
+                    cache_read: 0,
+                    cache_write: 0,
+                  }
+                : {
+                    cache_read: 0,
+                    cache_write: 0,
+                    ...existing?.cost,
+                    ...model.cost,
+                  },
+            options: {
+              ...existing?.options,
+              ...model.options,
+            },
+            limit: model.limit ??
+              existing?.limit ?? {
+                context: 0,
+                output: 0,
+              },
+            provider: model.provider ?? existing?.provider,
+          }
+          parsed.models[modelID] = parsedModel
         }
-        parsed.models[modelID] = parsedModel
       }
       database[providerID] = parsed
     }

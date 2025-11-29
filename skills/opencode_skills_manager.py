@@ -8,6 +8,7 @@ discovery, and execution capabilities.
 
 import logging
 import importlib
+import importlib.util
 import sys
 import time
 from typing import Dict, List, Any, Optional, Type
@@ -97,22 +98,35 @@ class OpenCodeSkillsManager:
     def _register_skill_from_file(self, file_path: Path):
         """Register a skill from a Python file"""
         module_name = file_path.stem
-        spec = importlib.util.spec_from_file_location(module_name, file_path)
         
-        if spec is None or spec.loader is None:
-            return
+        # Add skills directory to sys.path temporarily for imports
+        old_path = sys.path[:]
+        sys.path.insert(0, str(self.skills_path))
+        
+        try:
+            spec = importlib.util.spec_from_file_location(module_name, file_path)
             
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+            if spec is None or spec.loader is None:
+                return
+                
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        finally:
+            # Restore original sys.path
+            sys.path[:] = old_path
         
         # Look for skill classes
         for attr_name in dir(module):
             attr = getattr(module, attr_name)
             
-            # Check if it's a skill class
+            # Check if it's a skill class with proper filtering
             if (isinstance(attr, type) and 
                 attr_name.endswith("Skill") and 
-                hasattr(attr, '__bases__')):
+                hasattr(attr, '__bases__') and
+                attr_name != "BaseSkill" and
+                not attr_name.startswith("Test") and  # Exclude test classes
+                not attr_name.startswith("Mock") and  # Exclude mock classes
+                (hasattr(attr, 'execute') or hasattr(attr, '_execute_async'))):  # Must have execute method
                 
                 try:
                     self._register_skill_class(attr, module_name)
@@ -128,26 +142,30 @@ class OpenCodeSkillsManager:
             # Get skill metadata
             metadata = getattr(skill_instance, 'metadata', None)
             if metadata is None:
-                # Create basic metadata
-                metadata = type('Metadata', (), {
-                    'name': skill_class.__name__.lower().replace('skill', ''),
-                    'category': 'general',
-                    'description': skill_class.__doc__ or 'No description available',
-                    'capabilities': [],
-                    'parameters': {},
-                    'examples': []
-                })()
+                # Use skill instance properties for metadata
+                skill_name = getattr(skill_instance, 'name', skill_class.__name__.lower().replace('skill', ''))
+                skill_description = getattr(skill_instance, 'description', skill_class.__doc__ or 'No description available')
+                skill_capabilities = getattr(skill_instance, 'capabilities', [])
+                skill_parameters = getattr(skill_instance, 'parameters', {})
+                skill_example = getattr(skill_instance, 'example', '')
+            else:
+                # Use provided metadata
+                skill_name = getattr(metadata, 'name', skill_class.__name__.lower().replace('skill', ''))
+                skill_description = getattr(metadata, 'description', skill_class.__doc__ or 'No description available')
+                skill_capabilities = getattr(metadata, 'capabilities', [])
+                skill_parameters = getattr(metadata, 'parameters', {})
+                skill_example = getattr(metadata, 'example', '')
             
             # Create skill info
             skill_info = SkillInfo(
-                name=metadata.name or skill_class.__name__.lower().replace('skill', ''),
+                name=skill_name,
                 class_obj=skill_class,
                 instance=skill_instance,
-                category=getattr(metadata, 'category', 'general'),
-                description=getattr(metadata, 'description', 'No description'),
-                capabilities=getattr(metadata, 'capabilities', []),
-                parameters=getattr(metadata, 'parameters', {}),
-                examples=getattr(metadata, 'examples', []),
+                category=getattr(metadata, 'category', 'general') if metadata else 'general',
+                description=skill_description,
+                capabilities=skill_capabilities,
+                parameters=skill_parameters,
+                examples=[skill_example] if skill_example else [],
                 registration_time=time.time()
             )
             
@@ -162,26 +180,49 @@ class OpenCodeSkillsManager:
     
     def _register_builtin_skills(self):
         """Register built-in skills that might not be in files"""
-        # Try to register additional skills from neo-clone
         try:
-            from additional_skills import (
-                PlanningSkill, WebSearchSkill, MLTrainingSkill,
-                FileManagerSkill, TextAnalysisSkill, DataInspectorSkill
-            )
-            
-            builtin_skills = [
-                PlanningSkill, WebSearchSkill, MLTrainingSkill,
-                FileManagerSkill, TextAnalysisSkill, DataInspectorSkill
-            ]
-            
-            for skill_class in builtin_skills:
+            # Try to import and register additional skills
+            self._register_additional_skills()
+        except Exception as e:
+            logger.warning(f"Failed to register additional skills: {e}")
+        return
+
+    def _register_additional_skills(self):
+        """Register additional skills from neo-clone directory"""
+        try:
+            # Import additional skills modules
+            import sys
+            neo_clone_path = self.skills_path.parent / "neo-clone"
+            if neo_clone_path.exists():
+                old_path = sys.path[:]
+                sys.path.insert(0, str(neo_clone_path))
+
                 try:
-                    self._register_skill_class(skill_class, "additional_skills")
-                except Exception as e:
-                    logger.warning(f"Failed to register builtin skill {skill_class.__name__}: {e}")
-                    
+                    # Try to import additional skills
+                    from additional_skills import additional_skills
+                    for skill, category in additional_skills:
+                        try:
+                            self._register_skill_class(skill.__class__, "additional_skills")
+                            logger.info(f"Registered additional skill: {skill.metadata.name}")
+                        except Exception as e:
+                            logger.warning(f"Failed to register additional skill {skill.metadata.name}: {e}")
+
+                    # Try to import more skills
+                    from more_skills import more_additional_skills
+                    for skill, category in more_additional_skills:
+                        try:
+                            self._register_skill_class(skill.__class__, "more_skills")
+                            logger.info(f"Registered more skill: {skill.metadata.name}")
+                        except Exception as e:
+                            logger.warning(f"Failed to register more skill {skill.metadata.name}: {e}")
+
+                finally:
+                    sys.path[:] = old_path
+
         except ImportError:
-            logger.debug("Additional skills module not available")
+            logger.debug("Additional skills modules not available")
+        except Exception as e:
+            logger.warning(f"Error registering additional skills: {e}")
     
     def _build_category_index(self):
         """Build index of skills by category"""
@@ -254,8 +295,15 @@ class OpenCodeSkillsManager:
                 import asyncio
                 result = asyncio.run(skill_info.instance._execute_async(context, **kwargs))
             elif hasattr(skill_info.instance, 'execute'):
-                # Sync skill
-                result = skill_info.instance.execute(context, **kwargs)
+                # Sync skill - handle both string context and dict params
+                if isinstance(context, str):
+                    # Convert string context to dict format expected by base skills
+                    params = {'text': context, **kwargs}
+                else:
+                    # Use context as params if it's already a dict
+                    params = context if isinstance(context, dict) else {'text': str(context)}
+                    params.update(kwargs)
+                result = skill_info.instance.execute(params)
             else:
                 raise ValueError(f"Skill '{skill_name}' has no execute method")
             

@@ -12,12 +12,13 @@ OpenCode TUI with Neo-Clone Agent is a revolutionary terminal-based development 
 
 ### 🎯 **Key Features**
 
-- **🤖 Neo-Clone AI Agent**: Advanced brain system with 7 built-in skills
+- **🤖 Neo-Clone AI Agent**: Advanced brain system with 12+ specialized skills
 - **🧠 MiniMax Agent**: Sophisticated reasoning and intent classification
 - **⚡ TUI Interface**: Lightning-fast terminal user interface
 - **🔧 Multi-Model Support**: 36+ free AI models integrated
 - **📚 Smart Code Analysis**: Intelligent code understanding and generation
 - **🔄 Automated Workflows**: Streamlined development processes
+- **🎯 Multi-Skill Orchestration**: Coordinates multiple AI capabilities
 - **💾 Persistent Memory**: Learns from your coding patterns
 
 ---
@@ -96,42 +97,67 @@ The Neo-Clone brain is a sophisticated AI system designed to enhance your coding
 
 #### **Skill Registry**
 
-The brain includes 7 specialized skills that work together:
+The brain includes 12+ specialized skills that work together:
 
-1. **💻 Code Generation** (`code_generation.py`)
+1. **💻 Code Generation** (`skills/code_generation.py`)
    - Generate and explain Python ML code
    - Create algorithms and implementations
    - Optimize existing code
 
-2. **📝 Text Analysis** (`text_analysis.py`)
+2. **📝 Text Analysis** (`skills/text_analysis.py`)
    - Sentiment analysis and content moderation
    - Text processing and summarization
    - Content classification
 
-3. **📊 Data Inspector** (`data_inspector.py`)
+3. **📊 Data Inspector** (`skills/data_inspector.py`)
    - Analyze CSV/JSON data
    - Provide insights and summaries
    - Data visualization suggestions
 
-4. **🤖 ML Training** (`ml_training.py`)
+4. **🤖 ML Training** (`skills/ml_training.py`)
    - ML model training guidance
    - Best practices and recommendations
    - Model optimization tips
 
-5. **📁 File Manager** (`file_manager.py`)
+5. **📁 File Manager** (`skills/file_manager.py`)
    - Read files and analyze content
    - Manage directories and operations
    - File organization and cleanup
 
-6. **🔍 Web Search** (`web_search.py`)
+6. **🔍 Web Search** (`skills/web_search.py`)
    - Search the web for information
    - Fact-check and verify resources
    - Find documentation and examples
 
-7. **🧠 MiniMax Agent** (`minimax_agent.py`)
+7. **🧠 MiniMax Agent** (`skills/minimax_agent.py`)
    - Advanced reasoning and decision-making
    - Intent classification and understanding
    - Dynamic skill creation and management
+
+8. **🎯 Multi-Skill Orchestrator** (`skills/multi_skill_orchestrator.py`)
+   - Coordinates multiple skills for complex tasks
+   - Task decomposition and parallel processing
+   - Result synthesis and workflow optimization
+
+9. **📋 Planning Skill** (`skills/additional_skills.py`)
+   - Project planning and roadmaps
+   - Task breakdown and timeline estimation
+   - Resource planning and milestones
+
+10. **📈 Advanced File Manager** (`skills/more_skills.py`)
+    - Enhanced file operations
+    - Directory management and analysis
+    - File system organization
+
+11. **🔬 Advanced Text Analysis** (`skills/more_skills.py`)
+    - Entity extraction and keyword analysis
+    - Text summarization and complexity assessment
+    - Content type detection
+
+12. **📚 Additional Skills** (Public APIs, Programming Books)
+    - External API integrations
+    - Educational resource access
+    - Extended functionality modules
 
 ---
 
@@ -174,6 +200,104 @@ Neo-Clone Agent Response:
 
 Performance: 95% confidence | Processing time: 1.2s
 ```
+
+---
+
+## 🤖 **Neo-Clone Agent - Full Brain System Access**
+
+The **Neo-Clone Agent** is a specialized AI agent configuration that provides **complete access to the Neo-Clone brain system** with all advanced capabilities unlocked.
+
+### **🚀 Key Features**
+
+- **🧠 Full Brain System Access**: Complete integration with Neo-Clone's advanced AI brain
+- **🎯 Multi-Skill Orchestration**: Coordinates all 7+ specialized skills simultaneously
+- **🧠 Advanced Reasoning**: Powered by MiniMax agent for complex problem-solving
+- **🔄 Intelligent Routing**: Automatically selects optimal skills for each task
+- **📈 Continuous Learning**: Adapts and improves from every interaction
+- **⚡ High Performance**: Optimized for complex multi-step tasks
+
+### **🛠️ Agent Configuration**
+
+```json
+{
+  "neo-clone": {
+    "name": "neo-clone",
+    "description": "Neo-Clone AI Agent with full brain system access",
+    "model": "opencode/big-pickle",
+    "mode": "primary",
+    "tools": {
+      "neo-clone": true,
+      "todoread": true,
+      "todowrite": true,
+      "bash": true,
+      "edit": true,
+      "glob": true,
+      "grep": true,
+      "list": true,
+      "read": true,
+      "write": true,
+      "websearch": true
+    },
+    "options": {
+      "enable_brain_system": true,
+      "use_advanced_reasoning": true,
+      "multi_skill_orchestration": true,
+      "intelligent_routing": true
+    }
+  }
+}
+```
+
+### **🎯 When to Use Neo-Clone Agent**
+
+**Perfect For:**
+- **Complex Multi-Step Tasks** - Combines multiple AI skills
+- **Advanced Code Analysis** - Full brain intelligence for coding
+- **Data Science Workflows** - Code generation + data analysis
+- **Research Projects** - Web search + reasoning + analysis
+- **Enterprise-Level Tasks** - Maximum AI capabilities
+
+**Example Usage:**
+```bash
+# Start TUI with Neo-Clone Agent
+bun run tui
+
+# Select Agent: neo-clone
+# Select Model: opencode/big-pickle
+
+# Now you have full Neo-Clone brain system access!
+```
+
+### **🧠 What Makes Neo-Clone Agent Special**
+
+| Feature | Neo-Clone Agent | Standard Agents |
+|---------|----------------|-----------------|
+| **Brain Access** | ✅ Complete Neo-Clone brain | ❌ Limited access |
+| **Skill Coordination** | ✅ Multi-skill orchestration | ❌ Single skill focus |
+| **Advanced Reasoning** | ✅ MiniMax integration | ❌ Basic reasoning |
+| **Learning Capability** | ✅ Continuous adaptation | ❌ Static behavior |
+| **Intelligence Level** | ✅ Maximum AI power | ❌ Standard AI |
+
+### **⚙️ Advanced Configuration**
+
+To customize the Neo-Clone Agent, edit `opencode.json`:
+
+```json
+"agent": {
+  "neo-clone": {
+    "temperature": 0.7,
+    "topP": 0.9,
+    "prompt": "Custom system prompt for Neo-Clone behavior",
+    "permission": {
+      "edit": "allow",
+      "bash": {"*": "allow"},
+      "webfetch": "allow"
+    }
+  }
+}
+```
+
+**The Neo-Clone Agent represents the pinnacle of AI assistance - complete access to the Neo-Clone brain system for maximum intelligence and capability! 🧠✨**
 
 ---
 
@@ -287,19 +411,38 @@ MODEL_PREFERENCES = {
 
 ### **Skill Development**
 
-Create custom skills in `neo-clone/skills/`:
+Create custom skills in `skills/` directory:
 
 ```python
-from neo-clone.brain.base_brain import BaseSkill
+from base_skill import BaseSkill, SkillCategory, SkillResult
+from typing import Dict, Any
 
 class CustomSkill(BaseSkill):
-    def __init__(self):
-        super().__init__("custom_skill", "Custom functionality")
+    """Custom skill for specialized functionality"""
 
-    async def execute(self, input_data):
+    def __init__(self):
+        super().__init__(
+            name="custom_skill",
+            description="Custom functionality description",
+            category=SkillCategory.GENERAL,
+            capabilities=["custom_processing", "specialized_analysis"]
+        )
+
+    def execute(self, params: Dict[str, Any]) -> SkillResult:
+        """Execute the custom skill"""
         # Your custom logic here
-        return result
+        result = "Custom processing completed"
+
+        return SkillResult(
+            success=True,
+            output=result,
+            skill_name=self.name,
+            execution_time=0.1,
+            metadata={"processed": True}
+        )
 ```
+
+**Skills are automatically registered by the skills manager when placed in the `skills/` directory.**
 
 ---
 
@@ -311,19 +454,43 @@ opencode_TUI/
 │   ├── 📁 brain/                 # Core brain components
 │   │   ├── base_brain.py         # Foundation system
 │   │   ├── enhanced_brain.py     # Advanced capabilities
-│   │   ├── memory.py             # Memory management
-│   │   └── skills.py             # Skill registry
+│   │   ├── unified_memory.py     # Memory management
+│   │   ├── persistent_memory.py  # Long-term storage
+│   │   ├── vector_memory.py      # Semantic search
+│   │   └── data_models.py        # Data structures
+│   ├── 📁 monitoring/            # Performance monitoring
+│   ├── 📁 data/                  # Data storage
 │   ├── 📁 scripts/               # Utility scripts
-│   ├── minimax_agent.py          # Reasoning engine
+│   ├── minimax_agent.py          # Advanced reasoning engine
+│   ├── enhanced_llm_client.py    # LLM client with routing
 │   ├── main.py                   # Entry point
+│   ├── config.py                 # Configuration
 │   └── requirements.txt          # Python dependencies
+├── 📁 skills/                    # Centralized skills directory
+│   ├── opencode_skills_manager.py # Skills manager
+│   ├── base_skill.py             # Base skill framework
+│   ├── code_generation.py        # Code generation skill
+│   ├── text_analysis.py          # Text analysis skill
+│   ├── data_inspector.py         # Data analysis skill
+│   ├── web_search.py             # Web search skill
+│   ├── file_manager.py           # File management skill
+│   ├── ml_training.py            # ML training guidance
+│   ├── minimax_agent.py          # Advanced reasoning skill
+│   ├── multi_skill_orchestrator.py # Skill coordination
+│   ├── additional_skills.py      # Planning & organization
+│   ├── more_skills.py            # Advanced file/text skills
+│   └── [additional utility skills]
 ├── 📁 packages/                  # OpenCode packages
 │   ├── 📁 opencode/              # Core TUI application
 │   ├── 📁 app/                   # Web interface
 │   └── 📁 console/               # Console components
 ├── 📁 docs/                      # Documentation
 ├── 📁 examples/                  # Example code
-├── 📁 skills/                    # Additional skills
+├── 📁 config/                    # Configuration files
+├── 📁 core/                      # Core functionality
+├── 📁 monitoring/                # Performance monitoring
+├── 📁 tests/                     # Test files
+├── 📄 opencode.json              # Agent configurations
 ├── 📄 package.json               # Node.js dependencies
 ├── 📄 README.md                  # This file
 └── 📄 start-web.bat              # Web development launcher

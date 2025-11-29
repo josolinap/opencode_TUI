@@ -7,6 +7,7 @@ Integrates the multi-session manager with Neo-Clone's skills framework
 import asyncio
 import json
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional
@@ -170,6 +171,43 @@ class MultiSessionSkill(BaseSkill):
                 "config": {"type": "object", "required": False, "description": "Session configuration"}
             }
 
+    def execute(self, params) -> Any:
+        """Execute skill synchronously for BaseSkill compatibility"""
+        # Handle both dict params and direct calls
+        if isinstance(params, dict):
+            kwargs = params
+        else:
+            # If called with context as string, create default params
+            kwargs = {'text': str(params)}
+        
+        # Create a simple context
+        context = SkillContext(
+            user_input=kwargs.get('text', ''),
+            intent='multisession_operation',
+            conversation_history=[]
+        )
+        
+        # Run the async method
+        try:
+            import asyncio
+            if asyncio.get_event_loop().is_running():
+                # If already in an event loop, we need to run in a thread
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(asyncio.run, self._execute_async(context, **kwargs))
+                    result = future.result()
+            else:
+                result = asyncio.run(self._execute_async(context, **kwargs))
+            return result
+        except Exception as e:
+            return SkillResult(
+                success=False,
+                output=None,
+                skill_name=self.metadata.name,
+                execution_time=0.0,
+                error_message=str(e)
+            )
+
     async def _execute_async(self, context: SkillContext, **kwargs) -> SkillResult:
         """Execute multi-session operations"""
         start_time = time.time()
@@ -184,7 +222,7 @@ class MultiSessionSkill(BaseSkill):
                         output=None,
                         skill_name=self.metadata.name,
                         execution_time=time.time() - start_time,
-                        error_message=init_result.error
+                        error_message=init_result.error_message
                     )
             
             action = kwargs.get("action", "list")
@@ -228,14 +266,24 @@ class MultiSessionSkill(BaseSkill):
                 self.initialized = True
                 return SkillResult(
                     success=True,
-                    message="Multi-session manager initialized successfully"
+                    output="Multi-session manager initialized successfully",
+                    skill_name=self.metadata.name,
+                    execution_time=0.0
                 )
             except Exception as e:
                 return SkillResult(
                     success=False,
-                    error=f"Failed to initialize multi-session manager: {str(e)}"
+                    output=None,
+                    skill_name=self.metadata.name,
+                    execution_time=0.0,
+                    error_message=f"Failed to initialize multi-session manager: {str(e)}"
                 )
-        return SkillResult(success=True, message="Already initialized")
+        return SkillResult(
+            success=True,
+            output="Already initialized",
+            skill_name=self.metadata.name,
+            execution_time=0.0
+        )
     
     async def execute(self, params: Dict[str, Any]) -> SkillResult:
         """Execute multi-session operations"""
@@ -269,13 +317,19 @@ class MultiSessionSkill(BaseSkill):
             else:
                 return SkillResult(
                     success=False,
-                    error=f"Unknown operation: {operation}"
+                    output=None,
+                    skill_name=self.metadata.name,
+                    execution_time=0.0,
+                    error_message=f"Unknown operation: {operation}"
                 )
         
         except Exception as e:
             return SkillResult(
                 success=False,
-                error=f"Error executing multi-session operation: {str(e)}"
+                output=None,
+                skill_name=self.metadata.name,
+                execution_time=0.0,
+                error_message=f"Error executing multi-session operation: {str(e)}"
             )
     
     async def _create_session(self, params: Dict[str, Any]) -> SkillResult:
@@ -283,7 +337,13 @@ class MultiSessionSkill(BaseSkill):
         try:
             name = params.get("name")
             if not name:
-                return SkillResult(success=False, error="Session name is required")
+                return SkillResult(
+                    success=False,
+                    output=None,
+                    skill_name=self.metadata.name,
+                    execution_time=0.0,
+                    error_message="Session name is required"
+                )
             
             session_type = SessionType(params.get("type", "general"))
             priority = params.get("priority", 5)
@@ -298,17 +358,25 @@ class MultiSessionSkill(BaseSkill):
             
             return SkillResult(
                 success=True,
-                data={
+                output={
                     "session_id": session_id,
                     "name": name,
                     "type": session_type.value,
                     "background": background
                 },
-                message=f"Session '{name}' created successfully with ID: {session_id}"
+                skill_name=self.metadata.name,
+                execution_time=0.0,
+                metadata={"action": "create_session"}
             )
         
         except Exception as e:
-            return SkillResult(success=False, error=f"Failed to create session: {str(e)}")
+            return SkillResult(
+                success=False,
+                output=None,
+                skill_name=self.metadata.name,
+                execution_time=0.0,
+                error_message=f"Failed to create session: {str(e)}"
+            )
     
     async def _list_sessions(self) -> SkillResult:
         """List all active sessions"""
@@ -316,12 +384,20 @@ class MultiSessionSkill(BaseSkill):
             sessions = await self.manager.list_sessions()
             return SkillResult(
                 success=True,
-                data=sessions,
-                message=f"Found {len(sessions)} active sessions"
+                output=sessions,
+                skill_name=self.metadata.name,
+                execution_time=0.0,
+                metadata={"action": "list_sessions", "session_count": len(sessions)}
             )
         
         except Exception as e:
-            return SkillResult(success=False, error=f"Failed to list sessions: {str(e)}")
+            return SkillResult(
+                success=False,
+                output=None,
+                skill_name=self.metadata.name,
+                execution_time=0.0,
+                error_message=f"Failed to list sessions: {str(e)}"
+            )
     
     async def _execute_in_session(self, params: Dict[str, Any]) -> SkillResult:
         """Execute a command in a specific session"""
@@ -333,58 +409,103 @@ class MultiSessionSkill(BaseSkill):
             if not session_id or not command:
                 return SkillResult(
                     success=False,
-                    error="Both session_id and command are required"
+                    output=None,
+                    skill_name=self.metadata.name,
+                    execution_time=0.0,
+                    error_message="Both session_id and command are required"
                 )
             
             result = await self.manager.execute_in_session(session_id, command, args)
             
             return SkillResult(
                 success=result["success"],
-                data=result,
-                message=f"Command executed in session {session_id}"
+                output=result,
+                skill_name=self.metadata.name,
+                execution_time=0.0,
+                metadata={"action": "execute_in_session", "session_id": session_id}
             )
         
         except Exception as e:
-            return SkillResult(success=False, error=f"Failed to execute command: {str(e)}")
+            return SkillResult(
+                success=False,
+                output=None,
+                skill_name=self.metadata.name,
+                execution_time=0.0,
+                error_message=f"Failed to execute command: {str(e)}"
+            )
     
     async def _terminate_session(self, params: Dict[str, Any]) -> SkillResult:
         """Terminate a session"""
         try:
             session_id = params.get("session_id")
             if not session_id:
-                return SkillResult(success=False, error="Session ID is required")
+                return SkillResult(
+                    success=False,
+                    output=None,
+                    skill_name=self.metadata.name,
+                    execution_time=0.0,
+                    error_message="Session ID is required"
+                )
             
             success = await self.manager.terminate_session(session_id)
             
             return SkillResult(
                 success=success,
-                data={"session_id": session_id, "terminated": success},
-                message=f"Session {session_id} terminated" if success else f"Failed to terminate session {session_id}"
+                output={"session_id": session_id, "terminated": success},
+                skill_name=self.metadata.name,
+                execution_time=0.0,
+                metadata={"action": "terminate_session", "session_id": session_id}
             )
         
         except Exception as e:
-            return SkillResult(success=False, error=f"Failed to terminate session: {str(e)}")
+            return SkillResult(
+                success=False,
+                output=None,
+                skill_name=self.metadata.name,
+                execution_time=0.0,
+                error_message=f"Failed to terminate session: {str(e)}"
+            )
     
     async def _get_session_status(self, params: Dict[str, Any]) -> SkillResult:
         """Get status of a specific session"""
         try:
             session_id = params.get("session_id")
             if not session_id:
-                return SkillResult(success=False, error="Session ID is required")
+                return SkillResult(
+                    success=False,
+                    output=None,
+                    skill_name=self.metadata.name,
+                    execution_time=0.0,
+                    error_message="Session ID is required"
+                )
             
             session = await self.manager.get_session(session_id)
             if not session:
-                return SkillResult(success=False, error=f"Session {session_id} not found")
+                return SkillResult(
+                    success=False,
+                    output=None,
+                    skill_name=self.metadata.name,
+                    execution_time=0.0,
+                    error_message=f"Session {session_id} not found"
+                )
             
             status = session.get_status()
             return SkillResult(
                 success=True,
-                data=status,
-                message=f"Retrieved status for session {session_id}"
+                output=status,
+                skill_name=self.metadata.name,
+                execution_time=0.0,
+                metadata={"action": "get_session_status", "session_id": session_id}
             )
         
         except Exception as e:
-            return SkillResult(success=False, error=f"Failed to get session status: {str(e)}")
+            return SkillResult(
+                success=False,
+                output=None,
+                skill_name=self.metadata.name,
+                execution_time=0.0,
+                error_message=f"Failed to get session status: {str(e)}"
+            )
     
     async def _get_system_status(self) -> SkillResult:
         """Get overall system status"""
@@ -392,12 +513,20 @@ class MultiSessionSkill(BaseSkill):
             status = await self.manager.get_system_status()
             return SkillResult(
                 success=True,
-                data=status,
-                message="System status retrieved successfully"
+                output=status,
+                skill_name=self.metadata.name,
+                execution_time=0.0,
+                metadata={"action": "get_system_status"}
             )
         
         except Exception as e:
-            return SkillResult(success=False, error=f"Failed to get system status: {str(e)}")
+            return SkillResult(
+                success=False,
+                output=None,
+                skill_name=self.metadata.name,
+                execution_time=0.0,
+                error_message=f"Failed to get system status: {str(e)}"
+            )
     
     async def _cleanup_sessions(self) -> SkillResult:
         """Clean up terminated sessions"""
@@ -405,19 +534,33 @@ class MultiSessionSkill(BaseSkill):
             count = await self.manager.cleanup_terminated_sessions()
             return SkillResult(
                 success=True,
-                data={"cleaned_sessions": count},
-                message=f"Cleaned up {count} terminated sessions"
+                output={"cleaned_sessions": count},
+                skill_name=self.metadata.name,
+                execution_time=0.0,
+                metadata={"action": "cleanup_sessions", "cleaned_count": count}
             )
         
         except Exception as e:
-            return SkillResult(success=False, error=f"Failed to cleanup sessions: {str(e)}")
+            return SkillResult(
+                success=False,
+                output=None,
+                skill_name=self.metadata.name,
+                execution_time=0.0,
+                error_message=f"Failed to cleanup sessions: {str(e)}"
+            )
     
     async def _create_parallel_sessions(self, params: Dict[str, Any]) -> SkillResult:
         """Create multiple parallel sessions"""
         try:
             session_configs = params.get("sessions", [])
             if not session_configs:
-                return SkillResult(success=False, error="Session configurations are required")
+                return SkillResult(
+                    success=False,
+                    output=None,
+                    skill_name=self.metadata.name,
+                    execution_time=0.0,
+                    error_message="Session configurations are required"
+                )
             
             created_sessions = []
             errors = []
@@ -440,24 +583,38 @@ class MultiSessionSkill(BaseSkill):
             
             return SkillResult(
                 success=len(created_sessions) > 0,
-                data={
+                output={
                     "created_sessions": created_sessions,
                     "errors": errors,
                     "total_requested": len(session_configs),
                     "total_created": len(created_sessions)
                 },
-                message=f"Created {len(created_sessions)} out of {len(session_configs)} requested sessions"
+                skill_name=self.metadata.name,
+                execution_time=0.0,
+                metadata={"action": "create_parallel_sessions", "requested": len(session_configs), "created": len(created_sessions)}
             )
         
         except Exception as e:
-            return SkillResult(success=False, error=f"Failed to create parallel sessions: {str(e)}")
+            return SkillResult(
+                success=False,
+                output=None,
+                skill_name=self.metadata.name,
+                execution_time=0.0,
+                error_message=f"Failed to create parallel sessions: {str(e)}"
+            )
     
     async def _batch_execute(self, params: Dict[str, Any]) -> SkillResult:
         """Execute commands in multiple sessions"""
         try:
             commands = params.get("commands", [])
             if not commands:
-                return SkillResult(success=False, error="Commands list is required")
+                return SkillResult(
+                    success=False,
+                    output=None,
+                    skill_name=self.metadata.name,
+                    execution_time=0.0,
+                    error_message="Commands list is required"
+                )
             
             results = []
             
@@ -486,16 +643,24 @@ class MultiSessionSkill(BaseSkill):
             successful = sum(1 for r in results if r["success"])
             return SkillResult(
                 success=successful > 0,
-                data={
+                output={
                     "results": results,
                     "total_commands": len(commands),
                     "successful_commands": successful
                 },
-                message=f"Executed {successful} out of {len(commands)} commands successfully"
+                skill_name=self.metadata.name,
+                execution_time=0.0,
+                metadata={"action": "batch_execute", "total_commands": len(commands), "successful": successful}
             )
         
         except Exception as e:
-            return SkillResult(success=False, error=f"Failed to execute batch commands: {str(e)}")
+            return SkillResult(
+                success=False,
+                output=None,
+                skill_name=self.metadata.name,
+                execution_time=0.0,
+                error_message=f"Failed to execute batch commands: {str(e)}"
+            )
 
 
 # Convenience functions for direct usage
@@ -512,13 +677,13 @@ async def create_session(name: str, session_type: str = "general", **kwargs) -> 
     if result.success:
         return {
             "success": True,
-            "session_id": result.data["session_id"],
-            "message": result.message
+            "session_id": result.output["session_id"] if isinstance(result.output, dict) else None,
+            "message": "Session created successfully"
         }
     else:
         return {
             "success": False,
-            "error": result.error
+            "error": result.error_message
         }
 
 
@@ -530,13 +695,13 @@ async def list_sessions() -> Dict[str, Any]:
     if result.success:
         return {
             "success": True,
-            "sessions": result.data,
-            "message": result.message
+            "sessions": result.output,
+            "message": "Sessions listed successfully"
         }
     else:
         return {
             "success": False,
-            "error": result.error
+            "error": result.error_message
         }
 
 
@@ -553,13 +718,13 @@ async def execute_in_session(session_id: str, command: str, args: List[str] = No
     if result.success:
         return {
             "success": True,
-            "result": result.data,
-            "message": result.message
+            "result": result.output,
+            "message": "Command executed successfully"
         }
     else:
         return {
             "success": False,
-            "error": result.error
+            "error": result.error_message
         }
 
 
@@ -574,13 +739,13 @@ async def terminate_session(session_id: str) -> Dict[str, Any]:
     if result.success:
         return {
             "success": True,
-            "terminated": result.data["terminated"],
-            "message": result.message
+            "terminated": result.output["terminated"] if isinstance(result.output, dict) else False,
+            "message": "Session terminated successfully"
         }
     else:
         return {
             "success": False,
-            "error": result.error
+            "error": result.error_message
         }
 
 
@@ -592,13 +757,13 @@ async def get_system_status() -> Dict[str, Any]:
     if result.success:
         return {
             "success": True,
-            "status": result.data,
-            "message": result.message
+            "status": result.output,
+            "message": "System status retrieved successfully"
         }
     else:
         return {
             "success": False,
-            "error": result.error
+            "error": result.error_message
         }
 
 
@@ -690,7 +855,7 @@ async def main():
                 print(f"✅ {result.message}")
                 print(f"Cleaned sessions: {result.data['cleaned_sessions']}")
             else:
-                print(f"❌ Error: {result.error}")
+                print(f"❌ Error: {result.error_message}")
         
         elif args.operation == "parallel":
             if not args.config:
@@ -712,7 +877,7 @@ async def main():
                 for session in result.data["created_sessions"]:
                     print(f"  {session['session_id']}: {session['name']}")
             else:
-                print(f"❌ Error: {result.error}")
+                print(f"❌ Error: {result.error_message}")
         
         elif args.operation == "batch":
             if not args.config:
@@ -735,7 +900,7 @@ async def main():
                     status = "✅" if cmd_result["success"] else "❌"
                     print(f"  {status} {cmd_result['session_id']}: {cmd_result['command']}")
             else:
-                print(f"❌ Error: {result.error}")
+                print(f"❌ Error: {result.error_message}")
     
     except Exception as e:
         print(f"❌ Unexpected error: {e}")

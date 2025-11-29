@@ -1,0 +1,482 @@
+"""
+Web Search Skill for Neo-Clone
+Provides web search capabilities using various search engines, search result extraction and formatting, 
+quick fact checking and information lookup, and multiple search result format options.
+"""
+
+from skills import BaseSkill, SkillResult
+from functools import lru_cache
+import json
+import re
+from typing import Dict, Any, Optional, List
+import logging
+from urllib.parse import quote, urljoin, urlparse
+from datetime import datetime
+import hashlib
+import requests
+from bs4 import BeautifulSoup
+import time
+import random
+import sys
+
+def safe_text(text):
+    """Safely handle text encoding issues"""
+    if text is None:
+        return ""
+    try:
+        # Remove problematic characters
+        clean_text = ''.join(char for char in str(text) if ord(char) < 128 or char in '\n\r\t')
+        return clean_text.strip()
+    except:
+        return str(text).encode('ascii', 'ignore').decode('ascii')
+
+logger = logging.getLogger(__name__)
+
+class WebSearchSkill(BaseSkill):
+
+    def __init__(self):
+        super().__init__(
+            name='web_search',
+            description='Searches the web for information, facts, and current data',
+            example='Search for Python tutorials, find latest news, or look up information about AI'
+        )
+        self._cache = {}
+        self._max_cache_size = 100
+
+    @property
+    def parameters(self):
+        return {
+            'query': 'string - The search query',
+            'search_type': 'string - Type of search (general, news, fact_check). Default: general',
+            'max_results': 'integer - Maximum number of results (default: 10)',
+            'include_snippets': 'boolean - Include search snippets (default: true)'
+        }
+
+    def execute(self, params):
+        """Execute web search with given parameters"""
+        try:
+            # Support both old and new parameter formats
+            if 'text' in params:
+                # Legacy format - extract query from text
+                text = params.get('text', '').lower()
+                search_query = self._extract_search_query(text)
+                search_type = self._determine_search_type(text)
+            else:
+                # New format
+                search_query = params.get('query', '')
+                search_type = params.get('search_type', 'general')
+            
+            max_results = params.get('max_results', 10)
+            include_snippets = params.get('include_snippets', True)
+
+            # Generate cache key
+            cache_key = hashlib.md5(f'{search_query}_{search_type}_{max_results}_{include_snippets}'.encode()).hexdigest()
+            
+            # Check cache first
+            if cache_key in self._cache:
+                cached_result = self._cache[cache_key]
+                cached_result['cached'] = True
+                return SkillResult(True, "Web search completed (cached)", cached_result)
+
+            # Validate input
+            if not search_query.strip():
+                return SkillResult(False, "No search query provided. Please specify what to search for.")
+
+            # Perform search
+            result = self._perform_search(search_query, search_type, max_results, include_snippets)
+            
+            # Add to cache
+            self._add_to_cache(cache_key, result)
+
+            return SkillResult(True, f"Web search completed for '{search_query}'", result)
+
+        except Exception as e:
+            logger.error(f"Web search failed: {str(e)}")
+            return SkillResult(False, f"Web search failed: {str(e)}")
+
+    def _perform_search(self, query: str, search_type: str, max_results: int, include_snippets: bool) -> Dict[str, Any]:
+        """Perform the actual search"""
+        try:
+            # Try enhanced search if available
+            enhanced_result = self._enhanced_search(query, search_type, max_results)
+            if enhanced_result:
+                return enhanced_result
+        except Exception as e:
+            logger.warning(f"Enhanced search failed, using fallback: {str(e)}")
+
+        # Fallback search
+        if search_type == 'fact_check':
+            return self._fact_check(query)
+        elif search_type == 'news':
+            return self._search_news(query, max_results)
+        else:
+            return self._general_search(query, max_results, include_snippets)
+
+    def _enhanced_search(self, query: str, search_type: str, max_results: int) -> Optional[Dict[str, Any]]:
+        """Try to use enhanced search capabilities"""
+        try:
+            # Use DuckDuckGo for web search (no API key required)
+            return self._duckduckgo_search(query, search_type, max_results)
+        except Exception as e:
+            logger.error(f"Enhanced search error: {str(e)}")
+            return None
+
+    def _extract_search_query(self, text: str) -> str:
+        """Extract search query from user text"""
+        # Look for quoted text
+        quoted_matches = re.findall(r'["\']([^"\']+)["\']', text)
+        if quoted_matches:
+            return quoted_matches[0]
+        
+        # Look for search keywords
+        search_patterns = [
+            r'search for (.+?)(?:\.|$)',
+            r'find (.+?)(?:\.|$)',
+            r'look up (.+?)(?:\.|$)',
+            r'what is (.+?)(?:\.|$)',
+            r'who is (.+?)(?:\.|$)',
+            r'where is (.+?)(?:\.|$)',
+            r'how to (.+?)(?:\.|$)',
+        ]
+        
+        for pattern in search_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+        
+        # If no pattern matches, use the whole text as query
+        return text.strip()
+
+    def _determine_search_type(self, text: str) -> str:
+        """Determine the type of search based on text"""
+        text_lower = text.lower()
+        
+        if any(keyword in text_lower for keyword in ['fact check', 'verify', 'true or false', 'is it true']):
+            return 'fact_check'
+        elif any(keyword in text_lower for keyword in ['news', 'latest', 'recent', 'breaking', 'today']):
+            return 'news'
+        else:
+            return 'general'
+
+    def _general_search(self, query: str, max_results: int = 10, include_snippets: bool = True) -> Dict[str, Any]:
+        """General web search (mock implementation)"""
+        # Mock search results - in real implementation, this would call search APIs
+        mock_results = [
+            {
+                'title': f'Search result for "{query}" - Example 1',
+                'url': f'https://example.com/search?q={quote(query)}&result=1',
+                'snippet': f'This is a mock search result snippet for {query}. It contains relevant information about the topic.',
+                'relevance': 0.95
+            },
+            {
+                'title': f'Search result for "{query}" - Example 2',
+                'url': f'https://example.com/search?q={quote(query)}&result=2',
+                'snippet': f'Another mock search result for {query} with different information and perspective.',
+                'relevance': 0.87
+            },
+            {
+                'title': f'Search result for "{query}" - Example 3',
+                'url': f'https://example.com/search?q={quote(query)}&result=3',
+                'snippet': f'Third mock result providing additional context about {query}.',
+                'relevance': 0.78
+            }
+        ]
+        
+        # Limit results
+        results = mock_results[:max_results]
+        
+        # Remove snippets if not requested
+        if not include_snippets:
+            for result in results:
+                result.pop('snippet', None)
+        
+        return {
+            'query': query,
+            'search_type': 'general',
+            'total_results': len(results),
+            'results': results,
+            'cached': False,
+            'search_time': datetime.now().isoformat(),
+            'disclaimer': 'This is a mock search implementation. In production, this would use real search APIs.'
+        }
+
+    def _search_news(self, query: str, max_results: int = 10) -> Dict[str, Any]:
+        """News search (mock implementation)"""
+        mock_news = [
+            {
+                'title': f'Latest News: {query} - Breaking Update',
+                'url': f'https://news.example.com/{quote(query)}',
+                'snippet': f'Breaking news about {query}. Recent developments and updates.',
+                'source': 'Mock News Source',
+                'published_date': datetime.now().strftime('%Y-%m-%d'),
+                'relevance': 0.92
+            },
+            {
+                'title': f'{query} - Recent Developments',
+                'url': f'https://news.example.com/{quote(query)}-2',
+                'snippet': f'More news coverage about {query} with expert analysis.',
+                'source': 'Another News Source',
+                'published_date': datetime.now().strftime('%Y-%m-%d'),
+                'relevance': 0.85
+            }
+        ]
+        
+        return {
+            'query': query,
+            'search_type': 'news',
+            'total_results': len(mock_news[:max_results]),
+            'results': mock_news[:max_results],
+            'cached': False,
+            'search_time': datetime.now().isoformat(),
+            'disclaimer': 'This is a mock news search implementation.'
+        }
+
+    def _fact_check(self, query: str) -> Dict[str, Any]:
+        """Fact checking (mock implementation)"""
+        # Mock fact check result
+        return {
+            'query': query,
+            'search_type': 'fact_check',
+            'claim': query,
+            'verdict': 'Unable to verify',
+            'confidence': 0.5,
+            'explanation': f'This is a mock fact check for the claim: "{query}". In a real implementation, this would check against fact-checking databases.',
+            'sources': [
+                {
+                    'name': 'Mock Fact Check Source',
+                    'url': 'https://factcheck.example.com',
+                    'reliability': 'High'
+                }
+            ],
+            'cached': False,
+            'check_time': datetime.now().isoformat(),
+            'disclaimer': 'This is a mock fact checking implementation.'
+        }
+
+    def _duckduckgo_search(self, query: str, search_type: str, max_results: int) -> Dict[str, Any]:
+        """Perform real web search using DuckDuckGo"""
+        try:
+            # DuckDuckGo instant answer API (no API key required)
+            instant_answer_url = "https://api.duckduckgo.com/"
+            params = {
+                'q': query,
+                'format': 'json',
+                'no_html': 1,
+                'skip_disambig': 1
+            }
+            
+            # Add search type specific parameters
+            if search_type == 'news':
+                params['q'] += ' news'
+            elif search_type == 'fact_check':
+                params['q'] += ' fact check'
+            
+            # Make request with headers to avoid blocking
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            
+            response = requests.get(instant_answer_url, params=params, headers=headers, timeout=10)
+            response.raise_for_status()
+            response.encoding = 'utf-8'
+            
+            data = response.json()
+            
+            # Process results
+            results = []
+            
+            # Add instant answer if available
+            if data.get('AbstractText'):
+                results.append({
+                    'title': safe_text(data.get('AbstractSource', 'DuckDuckGo Instant Answer')),
+                    'url': safe_text(data.get('AbstractURL', '')),
+                    'snippet': safe_text(data.get('AbstractText', '')),
+                    'relevance': 0.95,
+                    'source': 'DuckDuckGo Instant Answer'
+                })
+            
+            # Add related topics if available
+            if data.get('RelatedTopics'):
+                for topic in data.get('RelatedTopics', [])[:max_results-len(results)]:
+                    if isinstance(topic, dict) and 'Text' in topic:
+                        text = safe_text(topic.get('Text', ''))
+                        title = text.split(' - ')[0] if ' - ' in text else text[:100]
+                        results.append({
+                            'title': title,
+                            'url': safe_text(topic.get('FirstURL', '')),
+                            'snippet': text,
+                            'relevance': 0.80,
+                            'source': 'DuckDuckGo Related Topics'
+                        })
+            
+            # If no results from instant answer, try HTML search
+            if not results:
+                results = self._duckduckgo_html_search(query, max_results)
+            
+            # If still no results, try Bing search (as fallback)
+            if not results:
+                results = self._bing_search_fallback(query, max_results)
+            
+            return {
+                'query': query,
+                'search_type': search_type,
+                'total_results': len(results),
+                'results': results[:max_results],
+                'cached': False,
+                'search_time': datetime.now().isoformat(),
+                'search_engine': 'DuckDuckGo',
+                'disclaimer': 'Real web search results from DuckDuckGo and other search engines.'
+            }
+            
+        except Exception as e:
+            logger.warning(f"DuckDuckGo search failed: {str(e)}")
+            # Return empty results rather than falling back to mock
+            return {
+                'query': query,
+                'search_type': search_type,
+                'total_results': 0,
+                'results': [],
+                'cached': False,
+                'search_time': datetime.now().isoformat(),
+                'error': f"Search failed: {str(e)}",
+                'disclaimer': 'Real web search attempt failed.'
+            }
+    
+    def _duckduckgo_html_search(self, query: str, max_results: int) -> List[Dict[str, Any]]:
+        """Parse DuckDuckGo HTML search results"""
+        try:
+            # DuckDuckGo HTML search
+            search_url = "https://html.duckduckgo.com/html/"
+            params = {
+                'q': query,
+                'kl': 'us-en'
+            }
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate',
+                'Connection': 'keep-alive'
+            }
+            
+            response = requests.get(search_url, params=params, headers=headers, timeout=10)
+            response.raise_for_status()
+            response.encoding = 'utf-8'
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            results = []
+            
+            # Parse search results
+            for result in soup.find_all('div', class_='result')[:max_results]:
+                try:
+                    title_elem = result.find('a', class_='result__a')
+                    snippet_elem = result.find('a', class_='result__snippet')
+                    
+                    if title_elem:
+                        title = safe_text(title_elem.get_text(strip=True))
+                        url = safe_text(title_elem.get('href', ''))
+                        snippet = safe_text(snippet_elem.get_text(strip=True)) if snippet_elem else ''
+                        
+                        # Clean up URL (DuckDuckGo uses redirect URLs)
+                        if url.startswith('/l/?uddg='):
+                            import urllib.parse
+                            url = safe_text(urllib.parse.unquote(url.split('uddg=')[1].split('&')[0]))
+                        
+                        results.append({
+                            'title': title,
+                            'url': url,
+                            'snippet': snippet,
+                            'relevance': 0.85,
+                            'source': 'DuckDuckGo Web Search'
+                        })
+                except Exception as e:
+                    logger.debug(f"Error parsing result: {str(e)}")
+                    continue
+            
+            return results
+            
+        except Exception as e:
+            logger.warning(f"DuckDuckGo HTML search failed: {str(e)}")
+            return []
+    
+    def _bing_search_fallback(self, query: str, max_results: int) -> List[Dict[str, Any]]:
+        """Fallback to Bing search (limited, no API key)"""
+        try:
+            # Use Bing's public search (limited results)
+            search_url = "https://www.bing.com/search"
+            params = {
+                'q': query,
+                'count': min(max_results, 10)
+            }
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            
+            response = requests.get(search_url, params=params, headers=headers, timeout=10)
+            response.raise_for_status()
+            response.encoding = 'utf-8'
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            results = []
+            
+            # Parse Bing search results
+            for result in soup.find_all('li', class_='b_algo')[:max_results]:
+                try:
+                    title_elem = result.find('h2')
+                    link_elem = title_elem.find('a') if title_elem else None
+                    snippet_elem = result.find('div', class_='b_caption')
+                    
+                    if link_elem:
+                        title = safe_text(link_elem.get_text(strip=True))
+                        url = safe_text(link_elem.get('href', ''))
+                        snippet = safe_text(snippet_elem.get_text(strip=True)) if snippet_elem else ''
+                        
+                        results.append({
+                            'title': title,
+                            'url': url,
+                            'snippet': snippet,
+                            'relevance': 0.80,
+                            'source': 'Bing Web Search'
+                        })
+                except Exception as e:
+                    logger.debug(f"Error parsing Bing result: {str(e)}")
+                    continue
+            
+            return results
+            
+        except Exception as e:
+            logger.warning(f"Bing search fallback failed: {str(e)}")
+            return []
+
+    def _add_to_cache(self, key: str, value: Dict[str, Any]):
+        """Add result to cache with size management"""
+        if len(self._cache) >= self._max_cache_size:
+            # Remove oldest entry (simple FIFO)
+            oldest_key = next(iter(self._cache))
+            del self._cache[oldest_key]
+        
+        self._cache[key] = value.copy()
+
+# Test the skill
+if __name__ == "__main__":
+    skill = WebSearchSkill()
+    
+    # Test with different search types
+    test_cases = [
+        {"text": "search for Python tutorials"},
+        {"query": "machine learning", "search_type": "general"},
+        {"text": "latest news about AI", "search_type": "news"},
+        {"text": "fact check: is the earth round?", "search_type": "fact_check"}
+    ]
+    
+    for i, test_case in enumerate(test_cases):
+        print(f"\n--- Test Case {i+1} ---")
+        result = skill.execute(test_case)
+        print(f"Success: {result.success}")
+        print(f"Output: {result.output}")
+        if result.data:
+            print(f"Results found: {result.data.get('total_results', 0)}")
+            if result.data.get('results'):
+                print(f"First result: {result.data['results'][0].get('title', 'N/A')}")

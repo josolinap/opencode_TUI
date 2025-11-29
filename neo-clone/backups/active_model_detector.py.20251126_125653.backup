@@ -1,0 +1,296 @@
+from functools import lru_cache
+'\nActive Model Detection System\n============================\n\nDynamically detects and validates available AI models in the current environment.\nPrioritizes working models over configured defaults.\n\nAuthor: Neo-Clone Agent\nVersion: 1.0\n'
+import asyncio
+import aiohttp
+import time
+import json
+import logging
+from typing import Dict, List, Optional, Any, Tuple
+from dataclasses import dataclass
+from pathlib import Path
+import os
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+@dataclass
+class ModelInfo:
+    """Information about a detected model"""
+    name: str
+    provider: str
+    model_id: str
+    endpoint: Optional[str] = None
+    api_key: Optional[str] = None
+    context_length: int = 4096
+    cost: str = 'unknown'
+    response_time: float = 0.0
+    available: bool = False
+    last_checked: Optional[float] = None
+    capabilities: List[str] = None
+
+    def __post_init__(self):
+        if self.capabilities is None:
+            self.capabilities = []
+
+class ActiveModelDetector:
+    """Detects and validates available AI models"""
+
+    def __init__(self):
+        self.detected_models: Dict[str, ModelInfo] = {}
+        self.check_interval = 300
+        self.last_check_time = 0
+        self.session = None
+        self.opencode_models = {'big-pickle': ModelInfo(name='big-pickle', provider='opencode', model_id='big-pickle', context_length=200000, cost='free', capabilities=['reasoning', 'coding', 'analysis', 'tool_calling']), 'grok-code': ModelInfo(name='grok-code', provider='opencode', model_id='grok-code', context_length=256000, cost='free', capabilities=['reasoning', 'coding', 'analysis', 'tool_calling', 'attachment']), 'gpt-5-nano': ModelInfo(name='gpt-5-nano', provider='opencode', model_id='gpt-5-nano', context_length=128000, cost='free', capabilities=['reasoning', 'coding', 'analysis', 'tool_calling'])}
+        self.additional_free_models = {}
+        self.model_candidates = {**self.opencode_models, **self.additional_free_models}
+        self.model_priority = ['big-pickle', 'grok-code', 'gpt-5-nano']
+
+    async def __aenter__(self):
+        """Async context manager entry"""
+        self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10))
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit"""
+        if self.session:
+            await self.session.close()
+
+    async def detect_available_models(self, force_refresh: bool=False) -> Dict[str, ModelInfo]:
+        """
+        Detect all available models in the current environment
+        Prioritizes OpenCode free models first, then other free models
+        
+        Args:
+            force_refresh: Force re-detection even if recently checked
+            
+        Returns:
+            Dictionary of available models
+        """
+        current_time = time.time()
+        if not force_refresh and current_time - self.last_check_time < self.check_interval:
+            logger.info(f'Using cached model detection (last checked {current_time - self.last_check_time:.1f}s ago)')
+            return {k: v for (k, v) in self.detected_models.items() if v.available}
+        logger.info('Starting active model detection (prioritizing OpenCode free models)...')
+        async with self:
+            logger.info('Checking OpenCode free models...')
+            opencode_tasks = []
+            for (model_name, model_info) in self.opencode_models.items():
+                task = self._test_model_availability(model_name, model_info)
+                opencode_tasks.append((model_name, model_info, task))
+            opencode_results = await asyncio.gather(*[task for (_, _, task) in opencode_tasks], return_exceptions=True)
+            available_models = {}
+            opencode_available = 0
+            for (i, result) in enumerate(opencode_results):
+                (model_name, model_info, _) = opencode_tasks[i]
+                if isinstance(result, Exception):
+                    logger.debug(f'OpenCode model {model_name} check failed: {result}')
+                    model_info.available = False
+                else:
+                    model_info.available = result
+                    model_info.last_checked = current_time
+                    if result:
+                        available_models[model_name] = model_info
+                        opencode_available += 1
+                        logger.info(f'✓ OpenCode model {model_name} is available (FREE)')
+                    else:
+                        logger.debug(f'✗ OpenCode model {model_name} is not available')
+                self.detected_models[model_name] = model_info
+            logger.info(f'OpenCode free models available: {opencode_available}/{len(self.opencode_models)}')
+            if opencode_available > 0:
+                logger.info(f'Using OpenCode free models as primary models (no API keys needed!)')
+            else:
+                logger.info('No OpenCode models available, checking additional free models...')
+                additional_tasks = []
+                for (model_name, model_info) in self.additional_free_models.items():
+                    task = self._test_model_availability(model_name, model_info)
+                    additional_tasks.append((model_name, model_info, task))
+                additional_results = await asyncio.gather(*[task for (_, _, task) in additional_tasks], return_exceptions=True)
+                additional_available = 0
+                for (i, result) in enumerate(additional_results):
+                    (model_name, model_info, _) = additional_tasks[i]
+                    if isinstance(result, Exception):
+                        logger.debug(f'Additional model {model_name} check failed: {result}')
+                        model_info.available = False
+                    else:
+                        model_info.available = result
+                        model_info.last_checked = current_time
+                        if result:
+                            available_models[model_name] = model_info
+                            additional_available += 1
+                            logger.info(f'✓ Additional free model {model_name} is available')
+                        else:
+                            logger.debug(f'✗ Additional model {model_name} is not available')
+                    self.detected_models[model_name] = model_info
+                logger.info(f'Additional free models available: {additional_available}/{len(self.additional_free_models)}')
+        self.last_check_time = current_time
+        available_count = len(available_models)
+        if available_count > 0:
+            opencode_count = len([m for m in available_models.values() if m.provider == 'opencode'])
+            logger.info(f'Detected {available_count} available models ({opencode_count} OpenCode FREE models): {list(available_models.keys())}')
+        else:
+            logger.warning('No models detected as available!')
+        return available_models
+
+    async def _test_model_availability(self, model_name: str, model_info: ModelInfo) -> bool:
+        """
+        Test if a specific model is available and working
+        
+        Args:
+            model_name: Name of the model
+            model_info: Model information
+            
+        Returns:
+            True if model is available and working
+        """
+        try:
+            if model_info.provider == 'opencode':
+                return await self._test_opencode_model(model_info)
+            elif model_info.provider == 'openai':
+                return await self._test_openai_model(model_info)
+            elif model_info.provider == 'anthropic':
+                return await self._test_anthropic_model(model_info)
+            elif model_info.provider == 'ollama':
+                return await self._test_ollama_model(model_info)
+            else:
+                logger.debug(f'Unknown provider for model {model_name}: {model_info.provider}')
+                return False
+        except Exception as e:
+            logger.debug(f'Error testing model {model_name}: {e}')
+            return False
+
+    async def _test_opencode_model(self, model_info: ModelInfo) -> bool:
+        """Test OpenCode model availability (these should always be available)"""
+        try:
+            valid_opencode_models = ['gpt-5-nano', 'big-pickle', 'grok-code', 'alpha-doubao-seed-code']
+            if model_info.model_id in valid_opencode_models:
+                logger.debug(f'OpenCode model {model_info.name} is available (built-in)')
+                return True
+            else:
+                logger.debug(f'Unknown OpenCode model: {model_info.model_id}')
+                return False
+        except Exception as e:
+            logger.debug(f'OpenCode model {model_info.name} test failed: {e}')
+            return False
+
+    async def _test_openai_model(self, model_info: ModelInfo) -> bool:
+        """Test OpenAI model availability"""
+        api_key = os.getenv('OPENAI_API_KEY')
+        if not api_key:
+            return False
+        headers = {'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'}
+        test_data = {'model': model_info.model_id, 'messages': [{'role': 'user', 'content': 'Hi'}], 'max_tokens': 1}
+        try:
+            async with self.session.post(model_info.endpoint, headers=headers, json=test_data) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    if 'choices' in result and len(result['choices']) > 0:
+                        logger.debug(f'OpenAI model {model_info.name} responded successfully')
+                        return True
+                else:
+                    logger.debug(f'OpenAI model {model_info.name} returned status {response.status}')
+                    return False
+        except Exception as e:
+            logger.debug(f'OpenAI model {model_info.name} test failed: {e}')
+            return False
+
+    async def _test_anthropic_model(self, model_info: ModelInfo) -> bool:
+        """Test Anthropic model availability"""
+        api_key = os.getenv('ANTHROPIC_API_KEY')
+        if not api_key:
+            return False
+        headers = {'x-api-key': api_key, 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01'}
+        test_data = {'model': model_info.model_id, 'max_tokens': 1, 'messages': [{'role': 'user', 'content': 'Hi'}]}
+        try:
+            async with self.session.post(model_info.endpoint, headers=headers, json=test_data) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    if 'content' in result and len(result['content']) > 0:
+                        logger.debug(f'Anthropic model {model_info.name} responded successfully')
+                        return True
+                else:
+                    logger.debug(f'Anthropic model {model_info.name} returned status {response.status}')
+                    return False
+        except Exception as e:
+            logger.debug(f'Anthropic model {model_info.name} test failed: {e}')
+            return False
+
+    async def _test_ollama_model(self, model_info: ModelInfo) -> bool:
+        """Test Ollama model availability"""
+        try:
+            async with self.session.get('http://localhost:11434/api/tags') as response:
+                if response.status != 200:
+                    return False
+                models_data = await response.json()
+                available_models = [model['name'] for model in models_data.get('models', [])]
+                if model_info.model_id in available_models:
+                    test_data = {'model': model_info.model_id, 'prompt': 'Hi', 'stream': False}
+                    async with self.session.post(model_info.endpoint, json=test_data) as gen_response:
+                        if gen_response.status == 200:
+                            logger.debug(f'Ollama model {model_info.name} responded successfully')
+                            return True
+                        else:
+                            return False
+                else:
+                    logger.debug(f'Ollama model {model_info.model_id} not found in available models: {available_models}')
+                    return False
+        except Exception as e:
+            logger.debug(f'Ollama model {model_info.name} test failed: {e}')
+            return False
+
+    @lru_cache(maxsize=128)
+    def get_best_available_model(self, task_requirements: Dict[str, Any]=None) -> Optional[ModelInfo]:
+        """
+        Get the best available model based on priority and task requirements
+        
+        Args:
+            task_requirements: Optional task requirements (capabilities, context length, etc.)
+            
+        Returns:
+            Best available model or None
+        """
+        available_models = [m for m in self.detected_models.values() if m.available]
+        if not available_models:
+            logger.warning('No models are currently available')
+            return None
+        if task_requirements:
+            required_capabilities = task_requirements.get('capabilities', [])
+            min_context_length = task_requirements.get('context_length', 0)
+            suitable_models = []
+            for model in available_models:
+                if required_capabilities:
+                    if not all((cap in model.capabilities for cap in required_capabilities)):
+                        continue
+                if model.context_length < min_context_length:
+                    continue
+                suitable_models.append(model)
+            if suitable_models:
+                available_models = suitable_models
+        priority_map = {model: i for (i, model) in enumerate(self.model_priority)}
+        available_models.sort(key=lambda m: priority_map.get(m.name, len(self.model_priority)))
+        best_model = available_models[0]
+        logger.info(f'Selected best available model: {best_model.name} ({best_model.provider})')
+        return best_model
+
+    def get_model_status_summary(self) -> Dict[str, Any]:
+        """Get a summary of all model statuses"""
+        total_models = len(self.detected_models)
+        available_models = len([m for m in self.detected_models.values() if m.available])
+        return {'total_models': total_models, 'available_models': available_models, 'last_check': self.last_check_time, 'models': {name: {'provider': info.provider, 'available': info.available, 'last_checked': info.last_checked, 'capabilities': info.capabilities} for (name, info) in self.detected_models.items()}}
+_detector_instance: Optional[ActiveModelDetector] = None
+
+async def get_detector() -> ActiveModelDetector:
+    """Get the global detector instance"""
+    global _detector_instance
+    if _detector_instance is None:
+        _detector_instance = ActiveModelDetector()
+    return _detector_instance
+
+async def detect_models(force_refresh: bool=False) -> Dict[str, ModelInfo]:
+    """Convenience function to detect available models"""
+    detector = await get_detector()
+    return await detector.detect_available_models(force_refresh)
+
+async def get_best_model(task_requirements: Dict[str, Any]=None) -> Optional[ModelInfo]:
+    """Convenience function to get the best available model"""
+    detector = await get_detector()
+    await detector.detect_available_models()
+    return detector.get_best_available_model(task_requirements)
